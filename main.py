@@ -1,15 +1,14 @@
 import sys
-import random
-import json
 import socket
 import threading
-import struct
+import random
+import json
 import time
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, \
-    QLabel, QDialog, QGridLayout, QRadioButton, QButtonGroup, QSpacerItem, QSizePolicy, \
-    QTextEdit, QLineEdit
-from PySide6.QtGui import QPixmap, QIcon, QTransform
-from PySide6.QtCore import Qt, QCoreApplication, QTimer, Signal, QObject
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,\
+    QTextEdit, QGridLayout, QSpacerItem, QSizePolicy)
+from PySide6.QtGui import QPixmap, QIcon, QTransform, QPainter
+from PySide6.QtCore import Qt, QRect, QObject, Signal
 import qdarktheme
 
 # Dark Mode Styling
@@ -56,65 +55,175 @@ Dark = qdarktheme.load_stylesheet(
     }
 """
 
-RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
-VALUES = {'2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14}
-CARD_WIDTH = 56
-CARD_HEIGHT = 84
-BUTTON_WIDTH = 66
-BUTTON_HEIGHT = 87
-
-class SignalCommunicator(QObject):
-    updateOpponentBottomCardsSignal = Signal(int, list)
-    updateOpponentTopCardsSignal = Signal(int, list)
-    updateOpponentHandSignal = Signal(int, list)
-    updateDeckSignal = Signal(dict)
-    startGameSignal = Signal()
-    proceedWithGameSetupSignal = Signal()
-    updateUISignal = Signal()
-    resetGameSignal = Signal()
-    setupGameSignal = Signal()
-    logTextSignal = Signal(str)
-    playerCountLabelSignal = Signal(str)
-    startButtonEnabledSignal = Signal(bool)
-    playerConnectedSignal = Signal(str)
-    playerDisconnectedSignal = Signal(str)
-    connectionStatusSignal = Signal(str)
-    disconnectSignal = Signal() 
-
-def centerDialog(dialog, parent, name):
+def centerDialog(dialog, parent, name=None):
     offset = 0
     if name == "playerSelectionDialog":
         offset = 100
     elif name == "rulesDialog":
         offset = 225
-    parentGeometery = parent.geometry()
-    parentCenterX = parentGeometery.center().x()
-    parentCenterY = parentGeometery.center().y()
-    dialogGeometery = dialog.geometry()
-    dialogCenterX = dialogGeometery.width() // 2
-    dialogCenterY = dialogGeometery.height() // 2
+
+    if isinstance(parent, QRect):
+        # Parent is a QRect (geometry object)
+        parentCenterX = parent.center().x()
+        parentCenterY = parent.center().y()
+    elif isinstance(parent, QWidget):
+        # Parent is a QWidget
+        parentGeometry = parent.geometry()
+        parentCenterX = parentGeometry.center().x()
+        parentCenterY = parentGeometry.center().y()
+    else:
+        # Default to screen center if no parent is provided
+        screenGeometry = QApplication.primaryScreen().geometry()
+        parentCenterX = screenGeometry.center().x()
+        parentCenterY = screenGeometry.center().y()
+
+    dialogGeometry = dialog.geometry()
+    dialogCenterX = dialogGeometry.width() // 2
+    dialogCenterY = dialogGeometry.height() // 2
+
     newX = parentCenterX - dialogCenterX
     newY = parentCenterY - dialogCenterY - offset
     dialog.move(newX, newY)
 
-class HostLobby(QDialog):
-    def __init__(self, parent=None, mainWindow=None):
-        super().__init__(parent)
-        self.mainWindow = mainWindow
-        self.setWindowTitle("Host Lobby")
-        self.setGeometry(0, 0, 300, 200)
-        self.serverSocket = None
-        self.clientSockets = []
-        self.clientAddresses = {}
-        self.clientNicknames = {}
-        self.serverThread = None
-        self.running = False
-        self.playerCount = 1  # Starting with host player
-        self.communicator = mainWindow.communicator  # Get the communicator from mainWindow
+# Constants for card dimensions
+CARD_WIDTH = 56
+CARD_HEIGHT = 84
+BUTTON_WIDTH = 66
+BUTTON_HEIGHT = 87
+
+RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+VALUES = {'3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,'J': 10, 'Q': 11, 'K': 12, 'A': 13, '2': 14, '10': 15}
+
+### Home Screen ###
+class HomeMenu(QWidget):
+    def __init__(self):
+        super().__init__()
         self.initUI()
-        centerDialog(self, self, "GameView")
 
     def initUI(self):
+        self.setWindowTitle("Palace")
+        self.setWindowIcon(QIcon(r"_internal\palaceData\palace.ico"))
+        self.setGeometry(660, 215, 600, 500)
+        layout = QVBoxLayout()
+
+        title = QLabel("Palace")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 36px; font-weight: bold;")
+        layout.addWidget(title)
+
+        buttonLayout = QVBoxLayout()
+
+        buttonLayout.addWidget(QLabel(""))
+        buttonLayout.addWidget(QLabel(""))
+        
+        playButton = QPushButton("Play")
+        playButton.setFixedHeight(40)
+        playButton.setFixedWidth(275)
+        # playButton.clicked.connect(self.playLocalGame)
+        buttonLayout.addWidget(playButton, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        buttonLayout.addWidget(QLabel(""))
+        
+        onlineButton = QPushButton("Play Online")
+        onlineButton.setFixedWidth(225)
+        onlineButton.clicked.connect(self.showOnlineMenu)
+        buttonLayout.addWidget(onlineButton, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        buttonLayout.addWidget(QLabel(""))
+        
+        rulesButton = QPushButton("Rules")
+        rulesButton.setFixedWidth(225)
+        rulesButton.clicked.connect(self.showRules)
+        buttonLayout.addWidget(rulesButton, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        buttonLayout.addWidget(QLabel(""))
+        
+        exitButton = QPushButton("Exit")
+        exitButton.setFixedWidth(225)
+        exitButton.clicked.connect(QApplication.instance().quit)
+        buttonLayout.addWidget(exitButton, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        buttonLayout.addWidget(QLabel(""))
+
+        layout.addLayout(buttonLayout)
+        self.setLayout(layout)
+
+    def showOnlineMenu(self):
+        self.hide()
+        self.onlineMenu = OnlineMenu(self)
+        self.onlineMenu.show()
+
+    def showRules(self):
+        print("Display game rules.")
+
+    def closeEvent(self, event):
+        if hasattr(self, 'localGame') and self.localGame:
+            self.localGame.close()
+        if hasattr(self, 'onlineMenu') and self.onlineMenu:
+            self.onlineMenu.close()
+        super().closeEvent(event)
+    
+### Online Menu ###
+class OnlineMenu(QWidget):
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+        self.initUI()
+        centerDialog(self, parent, "OnlineMenu")
+
+    def initUI(self):
+        self.setWindowTitle("Online Menu")
+        self.setGeometry(700, 300, 400, 300)
+        layout = QVBoxLayout()
+
+        hostButton = QPushButton("Host Game")
+        hostButton.clicked.connect(self.hostGame)
+        layout.addWidget(hostButton)
+
+        joinButton = QPushButton("Join Game")
+        joinButton.clicked.connect(self.joinGame)
+        layout.addWidget(joinButton)
+
+        backButton = QPushButton("Back")
+        backButton.clicked.connect(self.goBack)
+        layout.addWidget(backButton)
+
+        self.setLayout(layout)
+
+    def hostGame(self):
+        self.hide()
+        self.hostLobby = HostLobby(self)
+        self.hostLobby.show()
+
+    def joinGame(self):
+        self.hide()
+        self.joinLobby = JoinLobby(self)
+        self.joinLobby.show()
+
+    def goBack(self):
+        self.hide()
+        self.parent.show()
+
+### Host Lobby ###
+class HostLobby(QWidget):
+    updateOtherPlayerHandSignal = Signal(int, list, list, list)
+    
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+        self.server = None
+        self.hostGameView = None
+        self.clients = {}  # Map client sockets to indices
+        self.nextIndex = 2  # Host is always Player 1
+        self.numPlayers = None
+        self.hostController = None
+        self.initUI()
+        centerDialog(self, parent, "HostLobby")
+        self.startServer()
+
+    def initUI(self):
+        self.setWindowTitle("Hosting Lobby")
+        self.setGeometry(700, 300, 400, 300)
         layout = QVBoxLayout()
 
         self.infoLabel = QLabel("Hosting Lobby...\nWaiting for players to join.")
@@ -124,168 +233,214 @@ class HostLobby(QDialog):
         self.logText.setReadOnly(True)
         layout.addWidget(self.logText)
 
-        self.playerCountLabel = QLabel("Players: 1/2")
+        self.playerCountLabel = QLabel("Players: 1/4")  # Host is Player 1
         layout.addWidget(self.playerCountLabel)
 
         self.startButton = QPushButton("Start Game")
-        self.startButton.setEnabled(False)
+        self.startButton.setEnabled(False)  # Enabled only when 2+ players
         self.startButton.clicked.connect(self.startGame)
         layout.addWidget(self.startButton)
 
         backButton = QPushButton("Back")
-        backButton.clicked.connect(self.backToOnlineDialog)
+        backButton.clicked.connect(self.goBack)
         layout.addWidget(backButton)
 
         self.setLayout(layout)
-        self.startServer()
-
-    def showEvent(self, event):
-        centerDialog(self, self.mainWindow, "Host Lobby")
 
     def startServer(self):
-        try:
-            self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.serverSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            host_ip = socket.gethostbyname(socket.gethostname())
-            self.serverSocket.bind((host_ip, 12345))
-            self.logText.append(f"Server started on {host_ip}, port: 12345")
-            self.serverSocket.listen(5)
-            self.communicator.logTextSignal.emit(f"Server started on {host_ip}:12345")
-            self.communicator.logTextSignal.emit("Host Connected")
-            self.running = True
-            self.serverThread = threading.Thread(target=self.acceptConnections, daemon=True)
-            self.serverThread.start()
-        except OSError as e:
-            if e.errno == 10048:
-                self.communicator.logTextSignal.emit("Server is already running")
-            else:
-                self.communicator.logTextSignal.emit(f"Failed to start server: {e}")
+        if self.server:
+            self.shutdownServer()  # Ensure the previous server is closed properly
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server.bind(("0.0.0.0", 12345))
+        self.server.listen(4)
+        self.logText.append("Server started on port 12345.")
+        threading.Thread(target=self.acceptConnections, daemon=True).start()
 
     def acceptConnections(self):
-        while self.running:
+        while self.server:
             try:
-                clientSocket, clientAddress = self.serverSocket.accept()
-                if len(self.clientSockets) >= 2:
-                    clientSocket.send(b'lobby full')
-                    self.logText.append(f"Connection attempt from {clientAddress}")
-                    clientSocket.close()
-                else:
-                    self.clientSockets.append(clientSocket)
-                    self.clientAddresses[clientSocket] = clientAddress
+                clientSocket, addr = self.server.accept()
+                if len(self.clients) < 3:  # Max 4 players (host + 3 clients)
+                    index = self.nextIndex
+                    self.clients[clientSocket] = index
+                    self.nextIndex += 1
+                    self.logText.append(f"Player {index} connected from {addr}.")
+                    
+                    # Notify the client of their player index
+                    indexData = json.dumps({"action": "setIndex", "index": index})
+                    clientSocket.send(indexData.encode())
+                    
                     threading.Thread(target=self.handleClient, args=(clientSocket,), daemon=True).start()
-                    threading.Thread(target=self.listenForDisconnection, args=(clientSocket,), daemon=True).start()
+                    self.updatePlayerCount()
+                else:
+                    clientSocket.send(b"Lobby full.")
+                    clientSocket.close()
             except Exception as e:
-                if self.running:  # Only log if the server is supposed to be running
-                    self.logText.append(f"Error accepting connections: {e}")
+                self.logText.append(f"Error accepting connections: {e}")
+                break
 
     def handleClient(self, clientSocket):
+        index = self.clients[clientSocket]
         try:
-            data = clientSocket.recv(1024).decode('utf-8')
-            if data == "Player":
-                data = f"Player {self.playerCount + 1}"
-            nickname = data
-            self.clientNicknames[clientSocket] = nickname
-            self.playerCount += 1
-            logMessage = f"{nickname} connected from {self.clientAddresses[clientSocket]}"
-            self.communicator.playerConnectedSignal.emit(logMessage)
-            self.sendLogToClients(logMessage)  # Send log message to all clients
-            self.communicator.playerCountLabelSignal.emit(f"Players: {self.playerCount}/2")
-            if self.playerCount > 2:
-                self.communicator.startButtonEnabledSignal.emit(True)
-        except Exception as e:
-            self.communicator.logTextSignal.emit(f"Error handling client: {e}")
-
-    def sendLogToClients(self, message):
-        for clientSocket in self.clientSockets:
-            try:
-                clientSocket.sendall(f"log: {message}".encode('utf-8'))
-            except Exception as e:
-                self.communicator.logTextSignal.emit(f"Failed to send log to client: {e}")
-
-    def listenForDisconnection(self, clientSocket):
-        try:
-            while self.running:
-                data = clientSocket.recv(1024).decode('utf-8')
-                if data == 'leave':
-                    self.removeClient(clientSocket)
+            while True:
+                message = clientSocket.recv(1024).decode()
+                if not message:
+                    break  # Client disconnected
+                try:
+                    data = json.loads(message)  # Parse JSON
+                    if data['action'] == 'updateCards':
+                        playerIndex = data['playerIndex']
+                        handCards = data['handCards']
+                        topCards = data['topCards']
+                        bottomCards = data['bottomCards']
+                        self.hostController.updateOtherPlayerHand(playerIndex, handCards, topCards, bottomCards)
+                        self.broadcastToClients('updateCards', data, exclude=clientSocket)
+                    elif data['action'] == 'confirmedTopCards':
+                        self.hostController.topCardConfirms += 1
+                        self.hostController.checkAllPlayersConfirmed()
+                    elif data['action'] == 'startMainGame':
+                        self.hostController.startMainGame('startMainGame', {})
+                        self.broadcastToClients('startMainGame', {})
+                except json.JSONDecodeError:
+                    self.logText.append(f"Received invalid data from Player {index}: {message}")
                     break
         except Exception as e:
-            self.removeClient(clientSocket)
-
-    def removeClient(self, clientSocket):
-        nickname = self.clientNicknames.pop(clientSocket, "Unknown")
-        if clientSocket in self.clientSockets:
-            self.clientSockets.remove(clientSocket)
-            self.clientAddresses.pop(clientSocket, None)
-            self.playerCount -= 1
-            message = f"{nickname} has left the server."
-            self.communicator.playerDisconnectedSignal.emit(message)
-            self.sendLogToClients(message)  # Send the disconnection message to all clients
-            self.communicator.playerCountLabelSignal.emit(f"Players: {self.playerCount}/2")
+            self.logText.append(f"Player {index} disconnected: {e}")
+        finally:
+            self.clients.pop(clientSocket, None)
+            self.nextIndex -= 1
+            self.reassignIndices()
+            self.updatePlayerCount()
             clientSocket.close()
-            if self.playerCount <= 1:
-                self.communicator.startButtonEnabledSignal.emit(False)
 
+    def reassignIndices(self):
+        """
+        Reassign indices after a player disconnects and notify all clients of the updated indices.
+        """
+        self.logText.append("Reassigning player indices after disconnection.")
+        newClients = {}
+        newIndex = 2  # Start at 2 since host is Player 1
+
+        for clientSocket in self.clients.keys():
+            newClients[clientSocket] = newIndex
+            indexData = json.dumps({"action": "setIndex", "index": newIndex})
+            clientSocket.send(indexData.encode())
+            newIndex += 1
+
+        self.clients = newClients
+    
+    def updatePlayerCount(self):
+        count = len(self.clients) + 1  # Host included
+        self.playerCountLabel.setText(f"Players: {count}/4")
+        self.startButton.setEnabled(count > 1)  # Enabled only if 2+ players
+    
+    def broadcastToClients(self, action, data, exclude=None):
+        for clientSocket in self.clients.keys():
+            if clientSocket != exclude:  # Exclude the specified client
+                try:
+                    clientSocket.send(json.dumps({"action": action, **data}).encode())
+                except Exception as e:
+                    self.logText.append(f"Error broadcasting to client: {e}")
+        
     def startGame(self):
-        self.logText.append("Starting game...")
-        self.notifyClientsToStart()
-        self.accept()  # Close the lobby window
-        self.mainWindow.startHost()
+        suits = ['clubs', 'spades', 'hearts', 'diamonds']
+        self.deck = [(rank, suit, False, False) for rank in RANKS for suit in suits]
+        random.shuffle(self.deck)
 
-    def notifyClientsToStart(self):
-        for clientSocket in self.clientSockets:
+        self.players = []
+        playerData = {}
+
+        for i, client in enumerate(list(self.clients.keys()) + [None], start=1):
+            bottomCards = [(card[0], card[1], False, True) for card in self.deck[:3]]
+            hand = [(card[0], card[1], True, False) for card in self.deck[3:9]]
+            self.deck = self.deck[9:]
+            topCards = []
+
+            player = {
+                'bottomCards': bottomCards,
+                'topCards': topCards,
+                'hand': hand
+            }
+            playerData[f'player{i}'] = player
+
+            if client is None:
+                # Assign cards to the host
+                self.hostCards = hand
+
+        # Prepare payload for clients
+        self.numPlayers = len(playerData)
+        data = {
+            'action': 'deckSync',
+            'deck': self.deck,
+            'players': playerData,
+            'numPlayers': self.numPlayers
+        }
+        payload = json.dumps(data)
+        for client in self.clients.keys():
             try:
-                clientSocket.sendall(b'start')
+                client.send(payload.encode())
             except Exception as e:
-                self.logText.append(f"Failed to notify client: {e}")
+                print(f"Error sending data to client: {e}")
 
-    def backToOnlineDialog(self):
-        self.running = False
-        if self.serverSocket:
-            self.serverSocket.close()
-        for clientSocket in self.clientSockets:
-            clientSocket.close()
-        self.accept()
-        self.mainWindow.playOnline()
+        print("Deck and player data synced with all players.")
+        print(f"Player Data: {playerData}")
 
-    def cleanup(self):
-        self.running = False
-        if self.serverSocket:
-            self.serverSocket.close()
-        for clientSocket in self.clientSockets:
-            clientSocket.close()
-        self.clientSockets = []
-        self.clientAddresses = {}
-        self.clientNicknames = {}
-        self.playerCount = 1
+        # Start the host's game view
+        self.hide()
+        players = data.get("players", {})
+        playerKey = f'player1'
+        self.hostCards = players.get(playerKey, {}).get('hand', [])
+        self.bottomCards = players.get(playerKey, {}).get('bottomCards', [])
+        self.hostController = GameController(
+            1,
+            self.hostCards,
+            self.bottomCards,
+            self.numPlayers,
+            self.broadcastToClients
+        )
+        self.hostGameView = GameView(self.hostController, self.geometry(), self.numPlayers)
+        self.hostGameView.show()
+        self.hostController.startGame()
+    
+    def shutdownServer(self):
+        if self.server:
+            self.server.close()
+            self.server = None
+            print("Server shut down.")
+            for client in list(self.clients.keys()):
+                client.close()
+            self.clients.clear()
+
+    def goBack(self):
+        self.shutdownServer()
+        self.hide()
+        self.parent.show()
 
     def closeEvent(self, event):
-        self.cleanup()
-        event.accept()
+        self.shutdownServer()
+        super().closeEvent(event)
 
-class JoinLobby(QDialog):
-    connectionEstablished = Signal()
-    startSignalReceived = Signal()
-    lobbyFullSignal = Signal()
-
-    def __init__(self, parent=None, mainWindow=None):
-        super().__init__(parent)
-        self.mainWindow = mainWindow
-        self.setWindowTitle("Join Lobby")
-        self.setGeometry(0, 0, 300, 200)  # Default position, will be centered later
-        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
-        self.clientSocket = None
-        self.communicator = mainWindow.communicator  # Get the communicator from mainWindow
+### Join Lobby ###
+class JoinLobby(QWidget):
+    startGameSignal = Signal(int)
+    
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+        self.client = None
+        self.controller = None
+        self.connected = False  # Track connection status
+        self.playerIndex = None  # Store the assigned player index
+        self.numPlayers = None
         self.initUI()
+        centerDialog(self, parent, "JoinLobby")
 
-        # Connect signals to slots
-        self.connectionEstablished.connect(self.onConnectionEstablished)
-        self.startSignalReceived.connect(self.onStartSignalReceived)
-        self.lobbyFullSignal.connect(self.onLobbyFull)
-
-        centerDialog(self, self, "GameView")
+        # Connect the startGameSignal to the startGame slot
+        self.startGameSignal.connect(self.startGame)
 
     def initUI(self):
+        self.setWindowTitle("Join Lobby")
+        self.setGeometry(700, 300, 400, 300)
         layout = QVBoxLayout()
 
         self.infoLabel = QLabel("Enter host address to join lobby:")
@@ -308,1760 +463,860 @@ class JoinLobby(QDialog):
         layout.addWidget(self.joinButton)
 
         self.backButton = QPushButton("Back")
-        self.backButton.clicked.connect(self.backToOnlineDialog)
+        self.backButton.clicked.connect(self.goBack)
         layout.addWidget(self.backButton)
 
-        self.leaveButton = QPushButton("Leave Server")
-        self.leaveButton.setStyleSheet("background-color: red; color: white;")
-        self.leaveButton.clicked.connect(self.leaveServer)
-        self.leaveButton.setVisible(False)
-        layout.addWidget(self.leaveButton)
-
         self.setLayout(layout)
-
-    def showEvent(self, event):
-        centerDialog(self, self.mainWindow, "JoinLobby")
 
     def joinLobby(self):
-        hostAddress = self.addressInput.text()
-        nickname = self.nicknameInput.text() or "Player"
-        self.clientSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        hostIP = self.addressInput.text()
+        nickname = self.nicknameInput.text()
         try:
-            self.clientSocket.connect((hostAddress, 12345))
-            self.clientSocket.sendall(nickname.encode('utf-8'))
-            self.connectionEstablished.emit()
-            threading.Thread(target=self.listenForStartSignal, daemon=True).start()
-            self.backButton.setVisible(False)
-            self.leaveButton.setVisible(True)
-            self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
-            self.show()
-        except OSError as e:
-            if e.errno == 10049:
-                self.communicator.connectionStatusSignal.emit("Server does not exist.")
-            elif e.errno == 10061:
-                self.communicator.connectionStatusSignal.emit("Server is not running.")
-            else:
-                self.communicator.connectionStatusSignal.emit(f"Failed to connect: {e}")
+            self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client.connect((hostIP, 12345))
+            self.logText.append("Connected to server.")
+            self.connected = True
 
-    def listenForStartSignal(self):
+            # Send a join message to the host
+            initialData = {
+                'action': 'join',
+                'nickname': nickname
+            }
+            self.client.send(json.dumps(initialData).encode())
+
+            # Start listening to the server
+            threading.Thread(target=self.listenToServer, daemon=True).start()
+        except Exception as e:
+            self.logText.append(f"Failed to connect: {e}")
+
+    def listenToServer(self):
         try:
             while True:
-                self.joinButton.setDisabled(True)
-                data = self.clientSocket.recv(1024).decode('utf-8')
-                if data == 'start':
-                    self.startSignalReceived.emit()
+                message = self.client.recv(2048).decode()
+                if not message:
                     break
-                elif data == 'lobby full':
-                    self.lobbyFullSignal.emit()
-                    break
-                elif data.startswith('log:'):
-                    logMessage = data[4:].strip()
-                    self.communicator.logTextSignal.emit(logMessage)
-        except ConnectionResetError:
-            self.communicator.connectionStatusSignal.emit("Connection was closed by the server.")
-            self.leaveButton.setVisible(False)
-            self.backButton.setVisible(True)
-            self.joinButton.setDisabled(False)
+                if message.startswith("{") and message.endswith("}"):  # Check for JSON format
+                    data = json.loads(message)  # Deserialize JSON
+                    if data.get("action") == "setIndex":
+                        self.playerIndex = data.get("index")
+                        self.logText.append(f"Assigned Player {self.playerIndex}")
+                    elif data.get("action") == "deckSync":
+                        self.logText.append("Deck and player data received.")
+                        self.processDeckSync(data)
+                    elif data['action'] == 'updateCards':
+                        playerIndex = data['playerIndex']
+                        handCards = data['handCards']
+                        topCards = data['topCards']
+                        bottomCards = data['bottomCards']
+                        self.controller.updateOtherPlayerHand(playerIndex, handCards, topCards, bottomCards)
+                    elif data['action'] == 'startMainGame':
+                        playerIndex = data['playerIndex']
+                        self.controller.startMainGame(playerIndex)
+                    elif data['action'] == 'confirmedTopCards':
+                        self.controller.topCardConfirms += 1
+                        self.controller.checkAllPlayersConfirmed()
+                else:
+                    self.logText.append(f"Message from server: {message}")
         except Exception as e:
-            self.communicator.connectionStatusSignal.emit(f"Error in listenForStartSignal: {e}")
+            self.logText.append(f"Disconnected from server: {e}")
+        finally:
+            if self.client:
+                self.client.close()
 
-    def onConnectionEstablished(self):
-        self.communicator.connectionStatusSignal.emit(f"Connected to lobby")
-
-    def onStartSignalReceived(self):
-        self.accept()
-        self.mainWindow.startClient()
-
-    def onLobbyFull(self):
-        self.communicator.connectionStatusSignal.emit("Lobby is full. Unable to join.\n")
-        self.leaveButton.setVisible(False)
-        self.backButton.setVisible(True)
-        self.joinButton.setDisabled(False)
-        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
-        self.show()
+    def broadcastUpdate(self, action, data):
+        """
+        Send a message to the server for relaying to other players.
+        """
+        if self.client:
+            try:
+                payload = {
+                    'action': action,
+                    **data
+                }
+                self.client.send(json.dumps(payload).encode())
+            except Exception as e:
+                print(f"Error sending update: {e}")
+    
+    def confirmTopCards(self):
+        if self.controller:
+            self.controller.confirmTopCards()
+            payload = {'action': 'confirmTopCards', 'playerIndex': self.playerIndex}
+            self.broadcastUpdate('confirmTopCards', payload)
+    
+    def processDeckSync(self, data):
+        self.deck = data.get("deck", [])
+        players = data.get("players", {})
+        playerKey = f'player{self.playerIndex}'
+        self.numPlayers = data.get('numPlayers')
+        self.handCards = players.get(playerKey, {}).get('hand', [])
+        self.bottomCards = players.get(playerKey, {}).get('bottomCards', [])
+        self.startGameSignal.emit(self.playerIndex)
 
     def leaveServer(self):
-        if self.clientSocket:
-            self.clientSocket.sendall(b'leave')
-            self.clientSocket.close()
-        self.clientSocket = None
-        self.leaveButton.setVisible(False)
-        self.communicator.connectionStatusSignal.emit("Disconnected from server.")
-        self.addressInput.setEnabled(True)
-        self.nicknameInput.setEnabled(True)
-        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
-        self.show()
-        self.mainWindow.joinLobby(self)
-        self.accept()
+        if self.client:
+            self.client.close()
+            self.client = None
+        self.connected = False
+        self.logText.append("Disconnected from server.")
+        self.goBack()
 
-    def backToOnlineDialog(self):
-        if self.clientSocket:
-            try:
-                self.clientSocket.sendall(b'leave')
-            except (ConnectionResetError, BrokenPipeError):
-                pass
-            self.clientSocket.close()
-        self.accept()
-        self.mainWindow.playOnline()
-
-    def cleanup(self):
-        if self.clientSocket:
-            try:
-                self.clientSocket.sendall(b'leave')
-            except Exception:
-                pass
-            self.clientSocket.close()
-
-    def closeEvent(self, event):
-        self.cleanup()
-        event.accept()
-
-class Server:
-    def __init__(self, host, port, communicator):
-        self.host = host
-        self.port = port
-        self.communicator = communicator
-        self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.serverSocket.bind((self.host, self.port))
-        self.serverSocket.listen(1)
-        self.controller = None 
-        self.communicator.logTextSignal.emit(f"Server listening on {self.host}:{self.port}\n")
-        self.clientSocket, self.clientAddress = self.serverSocket.accept()
-        self.communicator.logTextSignal.emit(f"Connection from {self.clientAddress}\n")
-
-        # Start a thread to handle client communication
-        threading.Thread(target=self.handleClient).start()
-
-    def handleClient(self):
-        try:
-            while True:
-                data = self.receiveData(self.clientSocket)
-                if data:
-                    self.processClientData(data)
-                else:
-                    self.communicator.logTextSignal.emit("Client disconnected.")
-                    self.handleClientDisconnection()
-                    break
-        except (ConnectionResetError, ConnectionAbortedError, OSError) as e:
-            self.communicator.logTextSignal.emit(f"Connection error: {e}\n")
-            self.handleClientDisconnection()
-        except Exception as e:
-            self.communicator.logTextSignal.emit(f"Unexpected error: {e}\n")
-            self.handleClientDisconnection()
-        if self.clientSocket:
-            self.clientSocket.close()
-
-    def handleClientDisconnection(self):
-        self.clientSocket.close()
-        self.clientSocket = None
-        self.communicator.connectionStatusSignal.emit("Client disconnected.")
-        self.communicator.playerDisconnectedSignal.emit("Client has left the server.")
-    
-    def disconnect(self):
-        self.communicator.logTextSignal.emit("Disconnected from client.")
-        self.communicator.disconnectSignal.emit() 
-        if self.clientSocket:
-            try:
-                self.clientSocket.shutdown(socket.SHUT_RDWR)
-            except Exception:
-                pass
-            self.clientSocket.close()
-            self.clientSocket = None
-        if self.serverSocket:
-            self.serverSocket.close()
-
-    def sendDisconnectSignalToClient(self):
-        if self.clientSocket:
-            try:
-                data = json.dumps({'action': 'disconnect'}).encode('utf-8')
-                self.clientSocket.sendall(struct.pack('>I', len(data)) + data)
-            except Exception as e:
-                self.communicator.logTextSignal.emit(f"Failed to send disconnect signal to client: {e}")
-    
-    def processClientData(self, data):
-        if data is None:
-            return
-        if data['action'] == 'confirmTopCards':
-            playerIndex = int(data['playerIndex'])
-            self.communicator.updateOpponentBottomCardsSignal.emit(playerIndex, data['bottomCards'])
-            self.communicator.updateOpponentTopCardsSignal.emit(playerIndex, data['topCards'])
-            self.communicator.updateOpponentHandSignal.emit(playerIndex, data['hand'])
-            self.controller.checkBothPlayersConfirmed()
-        elif data['action'] == 'startGame':
-            self.controller.proceedWithGameSetup()
-        elif data['action'] == 'playCard':
-            self.controller.receiveGameState(data)
-        elif data['action'] == 'playAgainRequest':
-            self.controller.playAgainCount = data['count']
-            self.controller.handlePlayAgain()
-        elif data['action'] == 'resetGame':
-            self.controller.resetGame()
-        elif data['action'] == 'gameOver':
-            self.controller.gameOverSignal.emit(data['winner'])
-        elif data['action'] == 'disconnect':
-            self.controller.disconnectSignal.emit()
-
-    def sendToClient(self, data):
-        if self.clientSocket:
-            try:
-                serializedData = json.dumps(data).encode('utf-8')
-                msgLen = struct.pack('>I', len(serializedData))
-                print(f"Sending data to client: {data}\n")
-                self.clientSocket.sendall(msgLen + serializedData)
-            except Exception as e:
-                print(f"Error sending data to client: {e}\n")
+    def goBack(self):
+        if self.connected:
+            self.leaveServer()
         else:
-            print("Client socket is not connected\n")
-
-    def receiveData(self, sock):
-        rawMsgLen = self.recvall(sock, 4)
-        if not rawMsgLen:
-            return None
-        msglen = struct.unpack('>I', rawMsgLen)[0]
-        message = self.recvall(sock, msglen)
-        if message is None:
-            return None
-        data = json.loads(message)
-        print(f"Received data: {data}\n")
-        return data
-
-    def recvall(self, sock, n):
-        data = b''
-        while len(data) < n:
-            packet = sock.recv(n - len(data))
-            if not packet:
-                return None
-            data += packet
-        return data
-
-    def close(self):
-        if self.clientSocket:
-            try:
-                self.clientSocket.shutdown(socket.SHUT_RDWR)
-            except Exception:
-                pass
-            self.clientSocket.close()
-        if self.serverSocket:
-            self.serverSocket.close()
-
-class Client:
-    def __init__(self, host, port, communicator):
-        self.host = host
-        self.port = port
-        self.communicator = communicator
-        self.clientSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.controller = None 
-        try:
-            self.clientSocket.connect((self.host, self.port))
-            self.communicator.logTextSignal.emit("Connected to the server\n")
-            threading.Thread(target=self.handleServer).start()
-        except Exception as e:
-            self.communicator.logTextSignal.emit(f"Failed to connect to the server: {e}\n")
-            self.clientSocket = None  
-
-    def handleServer(self):
-        try:
-            while self.clientSocket:
-                data = self.receiveData(self.clientSocket)
-                if data:
-                    if data.get('action') == 'disconnect':
-                        self.communicator.connectionStatusSignal.emit("Server disconnected.")
-                        self.disconnect()
-                        break
-                    self.processServerData(data)
-                else:
-                    self.communicator.connectionStatusSignal.emit("Server disconnected.")
-                    self.disconnect()
-                    break
-        except (ConnectionResetError, ConnectionAbortedError, OSError) as e:
-            self.communicator.connectionStatusSignal.emit(f"Connection error: {e}\n")
-            self.disconnect()
-        except Exception as e:
-            self.communicator.connectionStatusSignal.emit(f"Unexpected error: {e}\n")
-            self.disconnect()
-        if self.clientSocket:
-            self.clientSocket.close()
-
-    def disconnect(self):
-        if self.clientSocket:
-            try:
-                self.clientSocket.shutdown(socket.SHUT_RDWR)
-            except Exception:
-                pass
-            self.clientSocket.close()
-            self.clientSocket = None
-        self.communicator.connectionStatusSignal.emit("Disconnected from server.")
-        self.communicator.disconnectSignal.emit()
-    
-    def processServerData(self, data):
-        if data is None:
-            self.communicator.logTextSignal.emit("Received None data from server\n")
-            return
-        if data['action'] == 'confirmTopCards':
-            playerIndex = int(data['playerIndex'])
-            self.communicator.updateOpponentBottomCardsSignal.emit(playerIndex, data['bottomCards'])
-            self.communicator.updateOpponentTopCardsSignal.emit(playerIndex, data['topCards'])
-            self.communicator.updateOpponentHandSignal.emit(playerIndex, data['hand'])
-            self.controller.checkBothPlayersConfirmed()
-        elif data['action'] == 'deckSync':
-            self.communicator.updateDeckSignal.emit(data)
-        elif data['action'] == 'startGame':
-            self.controller.proceedWithGameSetup()
-        elif data['action'] == 'playCard':
-            self.controller.receiveGameState(data)
-        elif data['action'] == 'playAgainRequest':
-            self.controller.playAgainCount = data['count']
-            self.controller.handlePlayAgain()
-        elif data['action'] == 'resetGame':
-            self.controller.resetGame()
-        elif data['action'] == 'gameOver':
-            self.controller.gameOverSignal.emit(data['winner'])
-        elif data['action'] == 'disconnect':
-            self.controller.disconnectSignal.emit()
-
-    def sendToServer(self, data):
-        if self.clientSocket:
-            try:
-                serializedData = json.dumps(data).encode('utf-8')
-                msgLen = struct.pack('>I', len(serializedData))
-                print(f"Sending data to server: {data}\n")
-                self.clientSocket.sendall(msgLen + serializedData)
-            except Exception as e:
-                print(f"Error sending data to server: {e}\n")
-        else:
-            print("Client socket is not connected\n")
-
-    def receiveData(self, sock):
-        rawMsgLen = self.recvall(sock, 4)
-        if not rawMsgLen:
-            return None
-        msglen = struct.unpack('>I', rawMsgLen)[0]
-        message = self.recvall(sock, msglen)
-        if message is None:
-            return None
-        data = json.loads(message)
-        print(f"Received data: {data}\n")
-        return data
-
-    def recvall(self, sock, n):
-        data = b''
-        while len(data) < n:
-            packet = sock.recv(n - len(data))
-            if not packet:
-                return None
-            data += packet
-        return data
-
-    def close(self):
-        if self.clientSocket:
-            try:
-                self.clientSocket.shutdown(socket.SHUT_RDWR)
-            except Exception:
-                pass
-            self.clientSocket.close()
-            self.clientSocket = None
-
-class GameOverDialog(QDialog):
-    playAgainSignal = Signal()
-    mainMenuSignal = Signal()
-    exitSignal = Signal()
-
-    def __init__(self, winnerName, parentCoords):
-        super().__init__()
-        self.setWindowTitle("Game Over")
-        self.setWindowIcon(QIcon(r"_internal\palaceData\palace.ico"))
-        self.setGeometry(805, 350, 300, 200)
-        layout = QVBoxLayout()
-        label = QLabel(f"Game Over! {winnerName} wins!")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(label)
-
-        buttonBox = QHBoxLayout()
-        playAgainButton = QPushButton("Play Again")
-        playAgainButton.clicked.connect(self.playAgain)
-        mainMenuButton = QPushButton("Main Menu")
-        mainMenuButton.clicked.connect(self.mainMenu)
-        exitButton = QPushButton("Exit")
-        exitButton.clicked.connect(self.exitGame)
-        buttonBox.addWidget(playAgainButton)
-        buttonBox.addWidget(mainMenuButton)
-        buttonBox.addWidget(exitButton)
-        layout.addLayout(buttonBox)
-        
-        self.setLayout(layout)
-       
-        centerDialog(self, parentCoords, "GameView")
-    
-    def playAgain(self):
-        self.playAgainSignal.emit()
-        self.accept()
-
-    def mainMenu(self):
-        self.mainMenuSignal.emit()
-        self.accept()
-
-    def exitGame(self):
-        self.exitSignal.emit()
-        QCoreApplication.instance().quit()
-
-class HomeScreen(QWidget):
-    def __init__(self, communicator):
-        super().__init__()
-        self.communicator = communicator
-        self.controller = None
-        self.initUI()
-        self.communicator.logTextSignal.connect(self.updateLogText)
-        self.communicator.playerCountLabelSignal.connect(self.updatePlayerCountLabel)
-        self.communicator.startButtonEnabledSignal.connect(self.setStartButtonEnabled)
-        self.communicator.playerConnectedSignal.connect(self.updateLogText)
-        self.communicator.playerDisconnectedSignal.connect(self.updateLogText)
-        self.communicator.connectionStatusSignal.connect(self.updateLogText)
-
-    def initUI(self):
-        self.setWindowTitle('Palace')
-        self.setWindowIcon(QIcon(r"_internal\palaceData\palace.ico"))
-        self.setGeometry(660, 215, 600, 500)
-        layout = QVBoxLayout()
-        title = QLabel("Palace")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 36px; font-weight: bold;")
-        layout.addWidget(title)
-
-        buttonLayout = QVBoxLayout()
-
-        buttonLayout.addWidget(QLabel(""))
-        buttonLayout.addWidget(QLabel(""))
-
-        playButton = QPushButton("Play")
-        playButton.setFixedHeight(40)
-        playButton.setFixedWidth(275)
-        playButton.clicked.connect(self.showPlayerSelectionDialog)
-        buttonLayout.addWidget(playButton)
-
-        buttonLayout.addWidget(QLabel(""))
-
-        onlineButton = QPushButton("Online")
-        onlineButton.clicked.connect(self.playOnline)
-        onlineButton.setFixedWidth(225)
-        buttonLayout.addWidget(onlineButton, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        buttonLayout.addWidget(QLabel(""))
-        
-        rulesButton = QPushButton("Rules")
-        rulesButton.clicked.connect(self.showRules)
-        rulesButton.setFixedWidth(225)
-        buttonLayout.addWidget(rulesButton, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        buttonLayout.addWidget(QLabel(""))
-
-        exitButton = QPushButton("Exit")
-        exitButton.clicked.connect(QCoreApplication.instance().quit)
-        exitButton.setFixedWidth(225)
-        buttonLayout.addWidget(exitButton, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        buttonLayout.addWidget(QLabel(""))
-
-        buttonContainer = QWidget()
-        buttonContainer.setLayout(buttonLayout)
-        layout.addWidget(buttonContainer, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        self.setLayout(layout)
-    
-    def returnToMainMenu(self):
-        self.show()
-        if self.controller:
-            self.controller.view.close()
-    
-    def showPlayerSelectionDialog(self):
-        self.playerSelectionDialog = QDialog(self)
-        self.playerSelectionDialog.setWindowTitle("Select Number of Players")
-        self.playerSelectionDialog.setGeometry(805, 350, 300, 200)
-
-        layout = QVBoxLayout()
-
-        label = QLabel("How many players?")
-        layout.addWidget(label)
-
-        self.radioGroup = QButtonGroup(self.playerSelectionDialog)
-        radioButton2 = QRadioButton("Player vs. CPU")
-        radioButton2.setFixedWidth(107)
-        radioButton3 = QRadioButton("Player vs. CPU vs. CPU")
-        radioButton3.setFixedWidth(150)
-        radioButton4 = QRadioButton("Player vs. CPU vs. CPU vs. CPU")
-        radioButton4.setFixedWidth(193)
-
-        self.radioGroup.addButton(radioButton2, 2)
-        self.radioGroup.addButton(radioButton3, 3)
-        self.radioGroup.addButton(radioButton4, 4)
-
-        layout.addWidget(radioButton2)
-        layout.addWidget(radioButton3)
-        layout.addWidget(radioButton4)
-        layout.addWidget(QLabel(""))
-
-        difficultyLabel = QLabel("Select AI Difficulty:")
-        layout.addWidget(difficultyLabel)
-
-        self.difficultyGroup = QButtonGroup(self.playerSelectionDialog)
-        easyButton = QRadioButton("Easy")
-        easyButton.setFixedWidth(55)
-        mediumButton = QRadioButton("Medium")
-        mediumButton.setFixedWidth(75)
-        hardButton = QRadioButton("Hard")
-        hardButton.setFixedWidth(57)
-        impossibleButton = QRadioButton("Impossible")
-        impossibleButton.setFixedWidth(115)
-
-        self.difficultyGroup.addButton(easyButton, 1)
-        self.difficultyGroup.addButton(mediumButton, 2)
-        self.difficultyGroup.addButton(hardButton, 3)
-        self.difficultyGroup.addButton(impossibleButton, 3)
-
-        layout.addWidget(easyButton)
-        layout.addWidget(mediumButton)
-        layout.addWidget(hardButton)
-        layout.addWidget(impossibleButton)
-        layout.addWidget(QLabel(""))
-        
-        buttonBox = QHBoxLayout()
-        okButton = QPushButton("OK")
-        cancelButton = QPushButton("Cancel")
-        okButton.clicked.connect(lambda: self.startGameWithSelectedPlayers(self.playerSelectionDialog))
-        cancelButton.clicked.connect(self.playerSelectionDialog.reject)
-        buttonBox.addWidget(okButton)
-        buttonBox.addWidget(cancelButton)
-        layout.addLayout(buttonBox)
-
-        self.playerSelectionDialog.setLayout(layout)
-        centerDialog(self.playerSelectionDialog, self, "playerSelectionDialog")
-        self.playerSelectionDialog.exec()
-
-    def startGameWithSelectedPlayers(self, dialog):
-        numPlayers = self.radioGroup.checkedId()
-        difficulty = self.difficultyGroup.checkedId()
-        if numPlayers in [2, 3, 4]:
-            dialog.accept()
             self.hide()
-            difficultyMap = {1: 'easy', 2: 'medium', 3: 'hard'}
-            difficultyLevel = difficultyMap.get(difficulty, 'medium')
-            self.controller = GameController(numPlayers, difficultyLevel, self.geometry())  # Pass the geometry
-            self.controller.view.show()
+            self.parent.show()
 
-    def playOnline(self):
-        self.onlineDialog = QDialog(self)
-        self.onlineDialog.setWindowTitle("Online Multiplayer")
-        self.onlineDialog.setGeometry(835, 400, 250, 150)
-        layout = QVBoxLayout()
-
-        hostButton = QPushButton("Host Lobby")
-        hostButton.clicked.connect(lambda: self.hostLobby(self.onlineDialog))
-        layout.addWidget(hostButton)
-
-        layout.addWidget(QLabel())
-
-        joinButton = QPushButton("Join Lobby")
-        joinButton.clicked.connect(lambda: self.joinLobby(self.onlineDialog))
-        layout.addWidget(joinButton)
-
-        layout.addWidget(QLabel())
-
-        closeButton = QPushButton("Close")
-        closeButton.setFixedWidth(75)
-        closeButton.clicked.connect(self.onlineDialog.accept)
-        layout.addWidget(closeButton, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        self.onlineDialog.setLayout(layout)
-        centerDialog(self.onlineDialog, self, "playOnlineDialog")
-        self.onlineDialog.exec()
-
-    def hostLobby(self, onlineDialog):
-        self.hostLobbyDialog = HostLobby(self, self)
-        self.hostLobbyDialog.show()
-        onlineDialog.accept()
-
-    def joinLobby(self, onlineDialog):
-        self.joinLobbyDialog = JoinLobby(self, self)
-        self.joinLobbyDialog.show()
-        onlineDialog.accept()
-
-    def startHost(self):
+    def startGame(self, playerIndex):
+        print(f"Starting game as Player {playerIndex}.")
         self.hide()
-        self.server = Server('localhost', 5555, self.communicator)
-        self.controller = GameController(numPlayers=2, difficulty='medium', parentCoord=self, connection=self.server, isHost=True, mainWindow=self)  
-        self.server.controller = self.controller
-        self.controller.view.show()
-
-    def startClient(self):
-        self.hide()
-        self.client = Client('localhost', 5555, self.communicator) 
-        self.controller = GameController(numPlayers=2, difficulty='medium', parentCoord=self, connection=self.client, isHost=False, mainWindow=self) 
-        self.client.controller = self.controller
-        self.controller.view.show()
-    
-    def showRules(self):
-        self.rulesDialog = QDialog(self)
-        self.rulesDialog.setWindowTitle("Rules")
-        self.rulesDialog.setGeometry(560, 100, 800, 300)
-        self.rulesDialog.setWindowIcon(QIcon(r"_internal\palaceData\palace.ico"))
-        layout = QVBoxLayout()
-        rulesLabel = QLabel(
-            """<h2>The Pack</h2>
-        <ul>
-            <li>2-4 players use one standard deck of 52 cards.</li>
-        </ul>
-        <h2>Rank of Cards</h2>
-        <ul>
-            <li>A-K-Q-J-9-8-7-6-5-4-3</li>
-            <li>The 2 and 10 are special cards that reset the deck.</li>
-            <li>The 7 is a special card that reverses the rank hierarchy, the next player ONLY must play a card rank 7 or lower.</li>
-        </ul>
-        <h2>Object of the Game</h2>
-        <ul>
-            <li>Play your cards in a pile using ascending order, and the first player to run out of cards wins.</li>
-        </ul>
-        <h2>The Deal</h2>
-        <ul>
-            <li>Deal three cards face down to each player. Players are not allowed to look at these cards and must place them
-            face down in three columns in front of each player.</li>
-            <li>Deal six cards to each player face down. Players may look at these cards in their hand.</li>
-            <li>Players select three cards from their hand and place them face up on the three face down cards in front of them.
-            Typically, higher value cards are placed face up.</li>
-            <li>Place the remaining cards from the deck face down in the center of the table to form the Draw pile.</li>
-        </ul>
-        <h2>The Play</h2>
-        <ul>
-            <li>The player with the agreed worst average top cards is the first player and the second player is clockwise or counter clockwise
-            with the second worst average top cards.</li>
-            <li>The first player plays any card from their hand. You can play multiple cards on your turn, as long as they're all equal to or
-            higher than the top pile card.</li>
-            <li>Once you have have finished your turn, draw cards from the Draw pile to maintain three cards in your hand at all times.</li>
-            <li>You must play a card if you can or pick up the current pile and add it to your hand.</li>
-            <li>On their turn, a player can play any 2 card which resets the top pile card to 2, starting the sequence all over.</li>
-            <li>On their turn, a player can play the 10 on any card, but it puts the pile into a bomb pile instead of resetting the sequence. The
-            player who put the 10 down then draws up to three cards and plays any card.</li>
-            <li>If four of the same rank are played in a row, either by one player or multiple players, it clears the pile. Place it in the bomb pile,
-            as these cards are out of the game. The player that played the fourth card can then play any card from their hand.</li>
-            <li>Play continues around the table until the deck is depleted.</li>
-            <li>Once the deck is depleted, players rely solely on the cards in their hand. Keep playing until there are no cards left in your
-            hand.</li>
-            <li>When it's your turn and you don't have a hand, play one card from your face-up cards in front of you.</li>
-            <li>When it's your turn and you've played all your face-up cards, pick a card that's face-down on the table. Don't look at it to choose.
-            Simply flip it over. If it plays on the current card by being equal or higher, you can play it. If not, you must pick up the discard pile.</li>
-            <li>If you pick up the discard pile, you must play those before continuing to play your face-down cards.</li>
-            <li>First player to finish all cards in hand, face-up cards, and face-down cards, wins the game.</li>
-        </ul>
-        <ul>
-            <li>
-        </ul>
-        """
+        self.controller = GameController(
+            self.playerIndex,
+            self.handCards,
+            self.bottomCards,
+            self.numPlayers,
+            self.broadcastUpdate
         )
-        rulesLabel.setTextFormat(Qt.TextFormat.RichText)
-        rulesLabel.setWordWrap(True)
-        rulesLabel.setFixedWidth(800)
-        layout.addWidget(rulesLabel)
-        closeButton = QPushButton("Close")
-        closeButton.clicked.connect(self.rulesDialog.accept)
-        layout.addWidget(closeButton)
-        self.rulesDialog.setLayout(layout)
-        centerDialog(self.rulesDialog, self, "rulesDialog")
-        self.rulesDialog.exec()
+        self.gameView = GameView(self.controller, self.geometry(), self.numPlayers)
+        self.gameView.show()
+        self.controller.startGame()
 
-    def updateLogText(self, message):
-        if hasattr(self, 'hostLobbyDialog') and self.hostLobbyDialog:
-            self.hostLobbyDialog.logText.append(message)
-        if hasattr(self, 'joinLobbyDialog') and self.joinLobbyDialog:
-            self.joinLobbyDialog.logText.append(message)
-    
-    def updatePlayerCountLabel(self, text):
-        if hasattr(self, 'hostLobbyDialog') and self.hostLobbyDialog:
-            self.hostLobbyDialog.playerCountLabel.setText(text)
-    
-    def setStartButtonEnabled(self, enabled):
-        if hasattr(self, 'hostLobbyDialog') and self.hostLobbyDialog:
-            self.hostLobbyDialog.startButton.setEnabled(enabled)
-    
-class Player:
-    def __init__(self, name):
-        self.name = name
-        self.hand = []
-        self.bottomCards = []
-        self.topCards = []
-
-    def playCard(self, cardIndex, pile):
-        card = self.hand.pop(cardIndex)
-        if card[2]:
-            card = (card[0], card[1], False, False)
-        if card[3]:
-            card = (card[0], card[1], card[2], False)
-        pile.append(card)
-        return card
-
-    def addToHand(self, cards):
-        self.hand.extend(cards)
-
-    def pickUpPile(self, pile):
-        self.hand.extend(pile)
-        pile.clear()
 
 class GameView(QWidget):
-    def __init__(self, controller, playerType, communicator, parentCoord):
+    def __init__(self, controller, parentCoords, numPlayers):
         super().__init__()
         self.controller = controller
-        self.playerType = playerType
-        self.communicator = communicator
+        self.numPlayers = numPlayers
+        self.playerIndex = self.controller.playerIndex
+        self.selectedCards = []
         self.initUI()
-
-        # Connect signals to slots
-        self.communicator.updateOpponentBottomCardsSignal.connect(self.updateOpponentBottomCards)
-        self.communicator.updateOpponentTopCardsSignal.connect(self.updateOpponentTopCards)
-        self.communicator.updateOpponentHandSignal.connect(self.updateOpponentHand)
-        self.communicator.resetGameSignal.connect(self.handleResetGame)
-        self.communicator.disconnectSignal.connect(self.handleDisconnect)
-
-        # Use the centerDialog function to position the window
-        centerDialog(self, parentCoord, "GameView")
+        centerDialog(self, parentCoords, "GameView")
+        
+        self.controller.updatePlayerHandSignal.connect(self.updateHandCards)
+        self.controller.updateTopCardsSignal.connect(self.updateTopCards)
+        self.controller.updateBottomCardsSignal.connect(self.updateBottomCards)
+        self.controller.updateOtherPlayerCardsSignal.connect(self.updateOtherPlayerCards)
+        self.controller.startMainViewSignal.connect(self.startMainView)
+        self.controller.selectedCardsChanged.connect(self.updateConfirmButton)
         
     def initUI(self):
-        self.setWindowTitle(f'Palace Card Game - {self.playerType}')
+        self.setWindowTitle(f'Palace Card Game - Player {self.playerIndex}')
         self.setWindowIcon(QIcon(r"_internal\palaceData\palace.ico"))
         self.setGeometry(450, 75, 900, 900)
-        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
-
         self.layout = QGridLayout()
 
-        # Disconnect Button (row 0, column 0)
+        # Disconnect Button
         self.disconnectButton = QPushButton("Disconnect")
         self.disconnectButton.setFixedWidth(125)
-        self.disconnectButton.setFixedHeight(25)
-        self.disconnectButton.clicked.connect(self.disconnect)
+        self.disconnectButton.clicked.connect(self.controller.disconnect)
         self.layout.addWidget(self.disconnectButton, 0, 0)
         
-        # Disconnect Button Spacer (row 0, column 0)
-        self.disconnectButtonSpacer = QLabel()
-        self.disconnectButtonSpacer.setFixedWidth(125)
-        self.disconnectButtonSpacer.setFixedHeight(25)
-        self.layout.addWidget(self.disconnectButtonSpacer, 0, 9)
+        self.spacerButton = QLabel()
+        self.spacerButton.setFixedWidth(125)
+        self.layout.addWidget(self.spacerButton, 0, 10)
+
+        # Center Console
+        self.initCenterConsole()
+
+        # Dynamic Layout Adjustment
+        if self.numPlayers == 2:
+            self.initTwoPlayerLayout()
+        elif self.numPlayers == 3:
+            self.initThreePlayerLayout()
+        elif self.numPlayers == 4:
+            self.initFourPlayerLayout()
         
-        # Opponent Hand (row 0, column 5)
-        self.opponentHandContainer = QWidget()
-        self.opponentHandContainer.setMaximumWidth(500)  # Set maximum width here
-        self.opponentHandLayout = QHBoxLayout(self.opponentHandContainer)
-        # Create a container layout with spacers to center the hand layout
-        self.opponentHandContainerLayout = QHBoxLayout()
-        self.opponentHandContainerLayout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
-        self.opponentHandContainerLayout.addWidget(self.opponentHandContainer, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.opponentHandContainerLayout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
-        self.layout.addLayout(self.opponentHandContainerLayout, 0, 5, alignment=Qt.AlignmentFlag.AlignCenter)
+        buttonsTopContainerLayout = QVBoxLayout()
+        buttonsLeftContainerLayout = QVBoxLayout()
+        buttonsRightContainerLayout = QVBoxLayout()
+        buttonsBottomContainerLayout = QVBoxLayout()
+        self.confirmButton = QPushButton("Confirm")
+        self.confirmButton.setEnabled(False)
+        self.confirmButton.setFixedWidth(240)
+        self.confirmButton.clicked.connect(self.controller.confirmTopCards)
+        self.placeButton = QPushButton("Select A Card")
+        self.placeButton.setEnabled(False)
+        self.placeButton.setFixedWidth(240)
+        # self.placeButton.clicked.connect(self.controller.placeCard)
+        self.placeButton.setVisible(False)
         
-        # Opponent Hand Label (row 1, column 5)
-        self.opponentHandLabel = QLabel(f"{'Player 2' if self.playerType == 'Player 1' else 'Player 1'}'s Hand")
-        self.opponentHandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.layout.addWidget(self.opponentHandLabel, 1, 5, alignment=Qt.AlignmentFlag.AlignCenter)
+        buttonsTopContainerLayout.addWidget(self.spacerButton, alignment=Qt.AlignmentFlag.AlignCenter)
+        buttonsBottomContainerLayout.addWidget(self.confirmButton, alignment=Qt.AlignmentFlag.AlignCenter)
+        buttonsBottomContainerLayout.addWidget(self.placeButton, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(buttonsTopContainerLayout, 0, 5, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(buttonsBottomContainerLayout, 12, 5, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        self.setLayout(self.layout)
 
-        # Opponent Top Cards (row 2, column 5)
-        self.opponentTopCardsLayout = QHBoxLayout()
-        self.layout.addLayout(self.opponentTopCardsLayout, 2, 5, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Opponent Bottom Cards (row 3, column 5)
-        self.opponentBottomCardsLayout = QHBoxLayout()
-        self.layout.addLayout(self.opponentBottomCardsLayout, 3, 5, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Spacer (row 4, column 5)
-        spacer1 = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-        self.layout.addItem(spacer1, 4, 5)
-
-        # Center layout setup (row 5, column 5)
+    def initCenterConsole(self):
+        """
+        Initializes the center console with the deck, pile, and current player information.
+        """
         self.deckLabel = QLabel()
         self.deckLabel.setFixedWidth(190)
-        self.deckLabel.setVisible(False)
-        self.pileLabel = QLabel("\t     Select your 3 Top cards...")
-        self.pileLabel.setStyleSheet("border: 0px solid black; background-color: transparent;")
+        self.deckLabel.hide()
+        
+        self.pileLabel = QLabel("\t\t\t  Select your 3 Top cards...")
+
         self.pickUpPileButton = QPushButton("Pick Up Pile")
         self.pickUpPileButton.setFixedWidth(125)
-        self.pickUpPileButton.setVisible(False)
-        self.pickUpPileButton.clicked.connect(self.controller.pickUpPile)
+        # self.pickUpPileButton.clicked.connect(self.controller.pickUpPile)
+        self.pickUpPileButton.hide()
+        
         self.currentPlayerLabel = QLabel("")
+        self.currentPlayerLabel.hide()
 
         spacer = QSpacerItem(60, 1, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-
+        
         self.consoleLayout = QHBoxLayout()
-        self.consoleLayout.addWidget(self.deckLabel, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.consoleLayout.addWidget(self.deckLabel, alignment=Qt.AlignmentFlag.AlignCenter)
         self.consoleLayout.addWidget(self.pileLabel, alignment=Qt.AlignmentFlag.AlignCenter)
         self.consoleLayout.addItem(spacer)
-        self.consoleLayout.addWidget(self.pickUpPileButton, alignment=Qt.AlignmentFlag.AlignRight)
-
-        self.centerContainer = QWidget()
-        self.centerContainer.setLayout(self.consoleLayout)
-        self.centerContainer.setFixedWidth(500)
+        self.consoleLayout.addWidget(self.pickUpPileButton, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.centerLayout = QVBoxLayout()
         self.centerLayout.addWidget(QLabel(""))
         self.centerLayout.addWidget(self.currentPlayerLabel, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.centerLayout.addWidget(self.centerContainer, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.centerLayout.addLayout(self.consoleLayout)
         self.centerLayout.addWidget(QLabel(""))
         self.centerLayout.addWidget(QLabel(""))
 
-        self.layout.addLayout(self.centerLayout, 5, 5, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Spacer (row 6, column 5)
-        spacer2 = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-        self.layout.addItem(spacer2, 6, 5)
-
-        # Player Bottom Cards (row 7, column 5)
-        self.bottomCardsLayout = QHBoxLayout()
-        self.layout.addLayout(self.bottomCardsLayout, 7, 5, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Player Top Cards (row 8, column 5)
-        self.topCardsLayout = QHBoxLayout()
-        self.layout.addLayout(self.topCardsLayout, 8, 5, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Player Hand Label (row 9, column 5)
-        self.playerHandLabel = QLabel(f"{self.playerType}'s Hand")
-        self.playerHandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.layout.addWidget(self.playerHandLabel, 9, 5, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Player Hand (row 10, column 5)
-        self.playerHandContainer = QWidget()
-        self.playerHandContainer.setMaximumWidth(500)  # Set maximum width here
-        self.playerHandLayout = QHBoxLayout(self.playerHandContainer)
-        # Create a container layout with spacers to center the hand layout
-        self.playerHandContainerLayout = QHBoxLayout()
-        self.playerHandContainerLayout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
-        self.playerHandContainerLayout.addWidget(self.playerHandContainer, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.playerHandContainerLayout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
-        self.layout.addLayout(self.playerHandContainerLayout, 10, 5, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Confirm/Place Button (row 11, column 5)
-        buttonsContainerLayout = QVBoxLayout()
-        self.confirmButton = QPushButton("Confirm")
-        self.confirmButton.setEnabled(False)
-        self.confirmButton.setFixedWidth(240)
-        self.confirmButton.clicked.connect(self.confirmTopCardSelection)
-        self.placeButton = QPushButton("Select A Card")
-        self.placeButton.setEnabled(False)
-        self.placeButton.setFixedWidth(240)
-        self.placeButton.clicked.connect(self.controller.placeCard)
-        self.placeButton.setVisible(False)
-
-        buttonsContainerLayout.addWidget(self.confirmButton, alignment=Qt.AlignmentFlag.AlignCenter)
-        buttonsContainerLayout.addWidget(self.placeButton, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.layout.addLayout(buttonsContainerLayout, 11, 5, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Width of the center console column
-        self.layout.setColumnMinimumWidth(5, 500)
-
-        if self.controller.numPlayers >= 3:
-            # Player 3 setup
-            self.player3HandLayout = QVBoxLayout()
-            self.player3TopCardsLayout = QVBoxLayout()
-            self.player3BottomCardsLayout = QVBoxLayout()
-
-            self.layout.addLayout(self.player3HandLayout, 5, 0, alignment=Qt.AlignmentFlag.AlignCenter)
-            self.player3HandLabel = QLabel("Player 3's Hand")
-            self.player3HandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.layout.addWidget(self.player3HandLabel, 5, 1, alignment=Qt.AlignmentFlag.AlignCenter)
-            self.layout.addLayout(self.player3TopCardsLayout, 5, 2, alignment=Qt.AlignmentFlag.AlignCenter)
-            self.layout.addLayout(self.player3BottomCardsLayout, 5, 3, alignment=Qt.AlignmentFlag.AlignCenter)
-
-            # Spacer (row 5, column 4)
-            spacer3 = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            self.layout.addItem(spacer3, 5, 4)
-
-        if self.controller.numPlayers == 4:
-            # Player 4 setup
-            self.player4HandLayout = QVBoxLayout()
-            self.player4TopCardsLayout = QVBoxLayout()
-            self.player4BottomCardsLayout = QVBoxLayout()
-
-            # Spacer (row 5, column 6)
-            self.layout.addItem(spacer3, 5, 6)
-
-            self.layout.addLayout(self.player4BottomCardsLayout, 5, 7, alignment=Qt.AlignmentFlag.AlignCenter)
-            self.layout.addLayout(self.player4TopCardsLayout, 5, 8, alignment=Qt.AlignmentFlag.AlignCenter)
-            self.player4HandLabel = QLabel("Player 4's Hand")
-            self.player4HandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.layout.addWidget(self.player4HandLabel, 5, 9, alignment=Qt.AlignmentFlag.AlignCenter)
-            self.layout.addLayout(self.player4HandLayout, 5, 10, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        self.setLayout(self.layout)
+        self.layout.addLayout(self.centerLayout, 6, 5)
     
-    def clear_layout(self, layout):
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-    
-    def handleResetGame(self):
-        self.clearSelectionLayout()
-    
-    def updateHandButtons(self, hand, layout, isPlayer, rotate):
-        self.controller.playCardButtons = []
-        for idx, card in enumerate(hand):
-            button = QLabel()
-            if rotate:
-                button.setFixedSize(BUTTON_HEIGHT, BUTTON_WIDTH)
-            else:
-                button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
-            button.setStyleSheet("border: 0px solid black; background-color: transparent;")
-            if not card[0] == "":
-                if not card[3] and isPlayer:
-                    pixmap = QPixmap(fr"_internal\palaceData\cards\{card[0].lower()}_of_{card[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                    if rotate:
-                        transform = QTransform().rotate(90)
-                        pixmap = pixmap.transformed(transform, Qt.TransformationMode.SmoothTransformation).scaled(CARD_HEIGHT, CARD_WIDTH, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                    else:
-                        pixmap = pixmap.scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                    button.setPixmap(pixmap)
-                else:
-                    pixmap = QPixmap(r"_internal\palaceData\cards\back.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                    if rotate:
-                        transform = QTransform().rotate(90)
-                        pixmap = pixmap.transformed(transform, Qt.TransformationMode.SmoothTransformation).scaled(CARD_HEIGHT, CARD_WIDTH, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                    else:
-                        pixmap = pixmap.scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                    button.setPixmap(pixmap)
-                button.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                if self.controller.topCardSelectionPhase:
-                    button.mousePressEvent = lambda event, idx=idx, btn=button: self.selectTopCard(idx, btn)
-                else:
-                    try:
-                        button.mousePressEvent = lambda event, idx=idx, btn=button: self.controller.prepareCardPlacement(idx, btn)
-                    except IndexError:
-                        return
-            self.controller.playCardButtons.append(button)
-            layout.addWidget(button)
-
-        if len(hand) >= 10:
-            spacer = QLabel()
-            spacer.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
-            layout.addWidget(spacer)
-
-    def updateOpponentHand(self, playerIndex, hand):
-        self.controller.players[playerIndex].hand = hand
-        self.updateOpponentHandButtons(hand)
+    def initPlayerAreaTop(self, labelText, position):
+        """
+        Helper function to initialize a player area (hand, top cards, bottom cards).
+        """
+        layout = QVBoxLayout()
+        handLayout = QHBoxLayout()
+        layout.addLayout(handLayout)
         
-    def updateOpponentTopCards(self, playerIndex, topCards):
-        self.controller.players[playerIndex].topCards = topCards
-        self.updateOpponentTopCardButtons(topCards)
-        
-    def updateOpponentBottomCards(self, playerIndex, bottomCards):
-        self.controller.players[playerIndex].bottomCards = bottomCards
-        self.updateOpponentBottomCardButtons(bottomCards)
-    
-    def updatePlayerHandButtons(self, hand):
-        self.clear_layout(self.playerHandLayout)  # Clear the layout before updating
-        self.updateHandButtons(hand, self.playerHandLayout, True, False)
-
-    def updateOpponentHandButtons(self, hand):
-        self.clear_layout(self.opponentHandLayout)  # Clear the layout before updating
-        self.updateHandButtons(hand, self.opponentHandLayout, False, False)
-
-    def updatePlayerTopCardButtons(self, topCards):
-        self.clear_layout(self.topCardsLayout)  # Clear the layout before updating
-        for card in topCards:
-            button = QLabel()
-            button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
-            button.setStyleSheet("border: 0px solid black; background-color: transparent;")
-            pixmap = QPixmap(f"_internal\palaceData\cards\{card[0].lower()}_of_{card[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            button.setPixmap(pixmap)
-            button.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            button.setDisabled(True)
-            self.topCardsLayout.addWidget(button)
-        if not topCards:
-            self.placeholder = QLabel()
-            self.placeholder.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
-            self.topCardsLayout.addWidget(self.placeholder)
-
-    def updateOpponentTopCardButtons(self, topCards):
-        self.clear_layout(self.opponentTopCardsLayout)  # Clear the layout before updating
-        for card in topCards:
-            button = QLabel()
-            button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
-            button.setStyleSheet("border: 0px solid black; background-color: transparent;")
-            pixmap = QPixmap(f"_internal\palaceData\cards\{card[0].lower()}_of_{card[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            button.setPixmap(pixmap)
-            button.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            button.setDisabled(True)
-            self.opponentTopCardsLayout.addWidget(button)
-        if not topCards:
-            self.placeholder = QLabel()
-            self.placeholder.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
-            self.opponentTopCardsLayout.addWidget(self.placeholder)
-
-    def updatePlayerBottomCardButtons(self, bottomCards):
-        self.clear_layout(self.bottomCardsLayout)  # Clear the layout before updating
-        for card in bottomCards:
-            button = QLabel()
-            button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
-            button.setStyleSheet("border: 0px solid black; background-color: transparent;")
-            pixmap = QPixmap(r"_internal\palaceData\cards\back.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            button.setPixmap(pixmap)
-            button.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.bottomCardsLayout.addWidget(button)
-        if not bottomCards:
-            self.placeholder = QLabel()
-            self.placeholder.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
-            self.bottomCardsLayout.addWidget(self.placeholder)
-
-    def updateOpponentBottomCardButtons(self, bottomCards):
-        self.clear_layout(self.opponentBottomCardsLayout)  # Clear the layout before updating
-        for card in bottomCards:
-            button = QLabel()
-            button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
-            button.setStyleSheet("border: 0px solid black; background-color: transparent;")
-            pixmap = QPixmap(r"_internal\palaceData\cards\back.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            button.setPixmap(pixmap)
-            button.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.opponentBottomCardsLayout.addWidget(button)
-        if not bottomCards:
-            self.placeholder = QLabel()
-            self.placeholder.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
-            self.opponentBottomCardsLayout.addWidget(self.placeholder)
-
-    def confirmTopCardSelection(self):
-        if self.controller.isHost:
-            playerIndex = 0
-        else:
-            playerIndex = 1
-        player = self.controller.players[playerIndex]
-        for card, _ in self.chosenCards:
-            player.topCards.append((card[0], card[1], True, False))
-        for card, cardIndex in sorted(self.chosenCards, key=lambda x: x[1], reverse=True):
-            del player.hand[cardIndex]
-
-        if self.controller.isHost:
-            self.updatePlayerBottomCardButtons(player.bottomCards)
-            self.updatePlayerTopCardButtons(player.topCards)
-            self.updatePlayerHandButtons(player.hand)
-            self.controller.connection.sendToClient({
-                'action': 'confirmTopCards',
-                'playerIndex': playerIndex,
-                'topCards': player.topCards,
-                'bottomCards': player.bottomCards,
-                'hand': player.hand
-            })
-        else:
-            self.updatePlayerBottomCardButtons(player.bottomCards)
-            self.updatePlayerTopCardButtons(player.topCards)
-            self.updatePlayerHandButtons(player.hand)
-            self.controller.connection.sendToServer({
-                'action': 'confirmTopCards',
-                'playerIndex': playerIndex,
-                'topCards': player.topCards,
-                'bottomCards': player.bottomCards,
-                'hand': player.hand
-            })
-        self.confirmButton.setDisabled(True)
-        self.disablePlayerHand()
-    
-    def updateUI(self, currentPlayer, deckSize, pile):
-        self.enableOpponentHandNotClickable()
-        if self.controller.topCardSelectionPhase:
-            self.confirmButton.setEnabled(len(self.chosenCards) == 3)
-        else:
-            self.confirmButton.setVisible(False)
-            self.placeButton.setVisible(True)
-            self.deckLabel.setVisible(True)
-            self.currentPlayerLabel.setVisible(True)
-            self.pickUpPileButton.setVisible(True)
-            self.currentPlayerLabel.setText("Current Player: ")
-            self.pileLabel.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
-            self.currentPlayerLabel.setText(f"Current Player: {currentPlayer.name}")
-
-            if deckSize:
-                self.deckLabel.setText(f"Draw Deck:\n\n{deckSize} cards remaining")
-            else:
-                self.deckLabel.setText("Draw Deck:\n\nEmpty")
-
-            if self.pileLabel.text() != "Bombed!!!" and not pile:
-                self.pileLabel.setText("Pile: Empty")
+        handLabelLayout = QLabel(labelText)
+        layout.addWidget(handLabelLayout, alignment=Qt.AlignmentFlag.AlignCenter)
             
-            if pile:
-                topCard = pile[-1]
-                pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                self.pileLabel.setPixmap(pixmap)
+        topCardsLayout = QHBoxLayout()
+        layout.addLayout(topCardsLayout)
 
-            self.placeButton.setEnabled(len(self.controller.selectedCards) > 0)
-       
-    def revealCard(self, cardLabel, card):
-        pixmap = QPixmap(fr"_internal/palaceData/cards/{card[0].lower()}_of_{card[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        cardLabel.setPixmap(pixmap)
+        bottomCardsLayout = QHBoxLayout()
+        layout.addLayout(bottomCardsLayout)
 
-    def showTopCardSelection(self):
-        self.chosenCards = []
-        self.cardButtons = []
+        for _ in range(3):  # Assume max 3 cards for each area
+            handSpacer = QLabel()
+            handSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            handSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            handLayout.addWidget(handSpacer)
 
-    def selectTopCard(self, cardIndex, button):
-        if self.controller.isHost:
-            playerIndex = 0 
+            topSpacer = QLabel()
+            topSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            topSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            topCardsLayout.addWidget(topSpacer)
+
+            bottomSpacer = QLabel()
+            bottomSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            bottomSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            bottomCardsLayout.addWidget(bottomSpacer)
+
+        self.layout.addLayout(layout, *position)
+        return handLayout, handLabelLayout, topCardsLayout, bottomCardsLayout
+    
+    def initPlayerAreaBot(self, labelText, position):
+        """
+        Helper function to initialize a player area (hand, top cards, bottom cards).
+        """
+        layout = QVBoxLayout()
+        
+        bottomCardsLayout = QHBoxLayout()
+        layout.addLayout(bottomCardsLayout)
+        
+        topCardsLayout = QHBoxLayout()
+        layout.addLayout(topCardsLayout)
+        
+        handLabelLayout = QLabel(labelText)
+        layout.addWidget(handLabelLayout, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        handLayout = QHBoxLayout()
+        layout.addLayout(handLayout)
+
+        for _ in range(3):  # Assume max 3 cards for each area
+            handSpacer = QLabel()
+            handSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            handSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            handLayout.addWidget(handSpacer)
+
+            topSpacer = QLabel()
+            topSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            topSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            topCardsLayout.addWidget(topSpacer)
+
+            bottomSpacer = QLabel()
+            bottomSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            bottomSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            bottomCardsLayout.addWidget(bottomSpacer)
+
+        self.layout.addLayout(layout, *position)
+        return handLayout, handLabelLayout, topCardsLayout, bottomCardsLayout
+
+    def initPlayerAreaLeft(self, labelText, position):
+        """
+        Helper function to initialize a player area (hand, top cards, bottom cards).
+        """
+        layout = QHBoxLayout()
+        
+        handLayout = QVBoxLayout()
+        layout.addLayout(handLayout)
+        
+        handLabelLayout = QLabel(labelText)
+        font = self.currentPlayerLabel.font()
+        font.setPointSize(9) 
+        handLabelLayout.setFont(font)
+        handLabelLayout.setFixedHeight(190)
+        handLabelLayout.setFixedWidth(25)
+        pixmap = QPixmap(handLabelLayout.size())
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setFont(font)
+        painter.setPen(Qt.GlobalColor.white)
+        painter.translate(pixmap.width(), 0)
+        painter.rotate(90)
+        painter.drawText(0, 0, handLabelLayout.height(), handLabelLayout.width(), Qt.AlignmentFlag.AlignCenter, handLabelLayout.text())
+        painter.end()
+        handLabelLayout.setPixmap(pixmap)
+        layout.addWidget(handLabelLayout, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        topCardsLayout = QVBoxLayout()
+        layout.addLayout(topCardsLayout)
+        
+        bottomCardsLayout = QVBoxLayout()
+        layout.addLayout(bottomCardsLayout)
+
+        for _ in range(3):  # Assume max 3 cards for each area
+            handSpacer = QLabel()
+            handSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            handSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            handLayout.addWidget(handSpacer)
+
+            topSpacer = QLabel()
+            topSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            topSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            topCardsLayout.addWidget(topSpacer)
+
+            bottomSpacer = QLabel()
+            bottomSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            bottomSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            bottomCardsLayout.addWidget(bottomSpacer)
+
+        self.layout.addLayout(layout, *position)
+        return handLayout, handLabelLayout, topCardsLayout, bottomCardsLayout
+    
+    def initPlayerAreaRight(self, labelText, position):
+        """
+        Helper function to initialize a player area (hand, top cards, bottom cards).
+        """
+        layout = QHBoxLayout()
+        
+        bottomCardsLayout = QVBoxLayout()
+        layout.addLayout(bottomCardsLayout)
+        
+        topCardsLayout = QVBoxLayout()
+        layout.addLayout(topCardsLayout)
+        
+        handLabelLayout = QLabel(labelText)
+        font = self.currentPlayerLabel.font()
+        font.setPointSize(9) 
+        handLabelLayout.setFont(font)
+        handLabelLayout.setFixedHeight(190)
+        handLabelLayout.setFixedWidth(25)
+        pixmap = QPixmap(handLabelLayout.size())
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setFont(font)
+        painter.setPen(Qt.GlobalColor.white)
+        painter.translate(0, pixmap.height())
+        painter.rotate(-90)
+        painter.drawText(0, 0, handLabelLayout.height(), handLabelLayout.width(), Qt.AlignmentFlag.AlignCenter, handLabelLayout.text())
+        painter.end()
+        handLabelLayout.setPixmap(pixmap)
+        layout.addWidget(handLabelLayout, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        handLayout = QVBoxLayout()
+        layout.addLayout(handLayout)
+
+        for _ in range(3):  # Assume max 3 cards for each area
+            handSpacer = QLabel()
+            handSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            handSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            handLayout.addWidget(handSpacer)
+
+            topSpacer = QLabel()
+            topSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            topSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            topCardsLayout.addWidget(topSpacer)
+
+            bottomSpacer = QLabel()
+            bottomSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            bottomSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
+            bottomCardsLayout.addWidget(bottomSpacer)
+
+        self.layout.addLayout(layout, *position)
+        return handLayout, handLabelLayout, topCardsLayout, bottomCardsLayout
+
+    def initTwoPlayerLayout(self):
+        """
+        Initializes the layout for a two-player game.
+        """
+        if self.playerIndex == 1:
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 2's Hand", (1, 5))
         else:
-            playerIndex = 1
-        card = self.controller.players[playerIndex].hand[cardIndex]
-        if (card, cardIndex) in self.chosenCards:
-            self.chosenCards.remove((card, cardIndex))
-            button.setStyleSheet("border: 0px solid black; background-color: transparent;")
-        else:
-            if len(self.chosenCards) < 3:
-                self.chosenCards.append((card, cardIndex))
-                button.setStyleSheet("border: 0px solid black; background-color: blue;")
-        self.confirmButton.setEnabled(len(self.chosenCards) == 3)
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 1's Hand", (1, 5))
 
-    def clearSelectionLayout(self):
-        self.chosenCards = []
-        self.cardButtons = []
-        self.pile = []
-        self.topCardSelectionPhase = True
-        self.pileLabel.setText("\t     Select your 3 Top cards...")
-        self.pileLabel.setFixedWidth(200)
-        self.deckLabel.setVisible(False)
-        self.currentPlayerLabel.setVisible(False)
-        self.pickUpPileButton.setVisible(False)
-        self.placeButton.setVisible(False)
-        self.confirmButton.setVisible(True)
-        
-        # Clear player hand layout
-        while self.playerHandLayout.count():
-            item = self.playerHandLayout.takeAt(0)
-            widget = item.widget()
-            if widget is None or (isinstance(widget, QLabel) and widget.pixmap() is None):  # Check if it's the spacer
-                continue
-            widget.deleteLater()
-        
-        # Clear opponent hand layout
-        while self.opponentHandLayout.count():
-            item = self.opponentHandLayout.takeAt(0)
-            widget = item.widget()
-            if widget is None or (isinstance(widget, QLabel) and widget.pixmap() is None):  # Check if it's the spacer
-                continue
-            widget.deleteLater()
-        
-        # Clear player top cards layout
-        while self.topCardsLayout.count():
-            item = self.topCardsLayout.takeAt(0)
-            widget = item.widget()
-            if widget is None or (isinstance(widget, QLabel) and widget.pixmap() is None):  # Check if it's the spacer
-                continue
-            widget.deleteLater()
-        
-        # Clear player bottom cards layout
-        while self.bottomCardsLayout.count():
-            item = self.bottomCardsLayout.takeAt(0)
-            widget = item.widget()
-            if widget is None or (isinstance(widget, QLabel) and widget.pixmap() is None):  # Check if it's the spacer
-                continue
-            widget.deleteLater()
-        
-        # Clear opponent top cards layout
-        while self.opponentTopCardsLayout.count():
-            item = self.opponentTopCardsLayout.takeAt(0)
-            widget = item.widget()
-            if widget is None or (isinstance(widget, QLabel) and widget.pixmap() is None):  # Check if it's the spacer
-                continue
-            widget.deleteLater()
-        
-        # Clear opponent bottom cards layout
-        while self.opponentBottomCardsLayout.count():
-            item = self.opponentBottomCardsLayout.takeAt(0)
-            widget = item.widget()
-            if widget is None or (isinstance(widget, QLabel) and widget.pixmap() is None):  # Check if it's the spacer
-                continue
-            widget.deleteLater()
+    def initThreePlayerLayout(self):
+        """
+        Initializes the layout for a three-player game.
+        """
+        if self.playerIndex == 1:
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 2's Hand", (6, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 3's Hand", (1, 5))
+        elif self.playerIndex == 2:
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 3's Hand", (6, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaBot("Player 1's Hand", (1, 5))
+        elif self.playerIndex == 3:
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 1's Hand", (6, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 2's Hand", (1, 5))
 
-    def enablePlayerHand(self):
-        for i in range(self.playerHandLayout.count()):
-            widget = self.playerHandLayout.itemAt(i).widget()
-            if widget is None or (isinstance(widget, QLabel) and widget.pixmap() is None):  # Check if it's the spacer
-                continue
-            widget.setEnabled(True)
-
-    def disablePlayerHand(self):
-        for i in range(self.playerHandLayout.count()):
-            widget = self.playerHandLayout.itemAt(i).widget()
-            if widget is None or (isinstance(widget, QLabel) and widget.pixmap() is None):  # Check if it's the spacer
-                continue
-            widget.setEnabled(False)
-
-    def enableOpponentHandNotClickable(self):
-        for i in range(self.opponentHandLayout.count()):
-            widget = self.opponentHandLayout.itemAt(i).widget()
+    def initFourPlayerLayout(self):
+        """
+        Initializes the layout for a four-player game.
+        """
+        if self.playerIndex == 1:
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 2's Hand", (5, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 3's Hand", (0, 5))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight("Player 4's Hand", (5, 10))
+        elif self.playerIndex == 2:
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 3's Hand", (5, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 4's Hand", (0, 5))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight("Player 1's Hand", (5, 10))
+        elif self.playerIndex == 3:
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 4's Hand", (5, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 1's Hand", (0, 5))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight("Player 2's Hand", (5, 10))
+        elif self.playerIndex == 4:
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 1's Hand", (5, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 2's Hand", (0, 5))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight("Player 3's Hand", (5, 10))
+    
+    def updateHandCards(self):
+        """
+        Update the current player's hand cards display (face up).
+        """
+        # Clear player hand cards layout
+        while self.playerHand.count():
+            item = self.playerHand.takeAt(0)
+            widget = item.widget()
             if widget:
-                widget.setEnabled(True)
-                widget.mousePressEvent = lambda event: None 
+                widget.deleteLater()
 
-    def handleDisconnect(self):
-        if self.controller.isHost:
-            self.controller.view.updateLogText("Client has disconnected.")
-            self.controller.view.disablePlayerHand()
-        else:
-            self.controller.disconnect()
-            self.close()
-            self.controller.returnToMainMenu()
+        # Add player hand cards
+        for idx, card in enumerate(self.controller.handCards):
+            button = QLabel()
+            button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
+            button.setStyleSheet("border: 2px solid transparent; background-color: transparent;")
+            if card:
+                pixmap = QPixmap(fr"_internal\palaceData\cards\{card[0].lower()}_of_{card[1].lower()}.png").scaled(
+                    CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                )
+                button.setPixmap(pixmap)
+                button.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+                # Add mouse press event for card selection
+                if self.controller.topCardSelectionPhase:
+                    button.mousePressEvent = lambda event, idx=idx, btn=button: self.controller.prepareCardPlacement(idx, btn)
+                else:
+                    button.mousePressEvent = lambda event, idx=idx, btn=button: self.prepareCardPlacement(idx, btn)
+            self.playerHand.addWidget(button)
+
     
-    def disconnect(self):
-        self.controller.disconnect()
-        self.close()
-        self.controller.returnToMainMenu()
-        
-    def closeEvent(self, event):
-        self.controller.closeConnections()
-        event.accept()
-    
-class GameController(QObject):
-    gameOverSignal = Signal(str)
-
-    def __init__(self, numPlayers, difficulty, parentCoord, connection=None, isHost=False, mainWindow=None):
-        super().__init__()
-        self.numPlayers = numPlayers
-        self.difficulty = difficulty
-        self.isHost = isHost
-        self.mainWindow = mainWindow  # Add reference to mainWindow
-        if connection is None:
-            self.communicator = SignalCommunicator()
-        else:
-            self.communicator = connection.communicator
-        self.communicator.startGameSignal.connect(self.proceedWithGameSetup)
-        self.communicator.proceedWithGameSetupSignal.connect(self.proceedWithGameSetupOnMainThread)
-        self.communicator.updateUISignal.connect(self.updateUI)
-        self.communicator.updateDeckSignal.connect(self.receiveDeckFromServer)
-        self.gameOverSignal.connect(self.stopTimer)
-        self.communicator.setupGameSignal.connect(self.setupGame)
-        if isHost:
-            self.playerType = "Player 1"
-        else:
-            self.playerType = "Player 2"
-        self.view = GameView(self, self.playerType, self.communicator, parentCoord)
-        self.players = [Player("Player 1"), Player("Player 2")]
-        self.sevenSwitch = False
-        self.deck = []
-        self.pile = []
-        self.currentPlayerIndex = 0
-        self.selectedCards = []
-        self.playCardButtons = []
-        self.topCardSelectionPhase = True
-        self.connection = connection
-        self.gameOver = False    
-        self.playAgainCount = 0
-        self.setupGame()
-
-        # Track threads for cleanup
-        self.threads = []
-
-    def handleDisconnect(self):
-        if self.isHost:
-            self.view.updateLogText("Client has disconnected.")
-            self.view.disablePlayerHand()
-        else:
-            self.disconnect()
-            self.returnToMainMenu()
-    
-    def disconnect(self):
-        self.gameOver = True
-        self.closeThreads()
-        if self.connection:
-            self.connection.close()
-        if not self.isHost:
-            self.handleDisconnect()
-    
-    def returnToMainMenu(self):
-        self.mainWindow.returnToMainMenu()
-    
-    def showGameOverDialog(self, winnerName):
-        dialog = GameOverDialog(winnerName, self.view)
-        dialog.playAgainSignal.connect(self.requestPlayAgain)
-        dialog.mainMenuSignal.connect(self.returnToMainMenu)
-        dialog.exitSignal.connect(self.exitGame)
-        dialog.exec()
-    
-    def exitGame(self):
-        QCoreApplication.instance().quit
-    
-    def notifyReset(self):
-        data = {'action': 'resetGame'}
-        self.connection.sendToClient(data)
-    
-    def requestPlayAgain(self):
-        if self.playAgainCount == 2:
-            self.handlePlayAgain()
-        else:
-            self.playAgainCount += 1
-            if self.isHost:
-                data = {'action': 'playAgainRequest', 
-                        'count' : self.playAgainCount}
-                self.connection.sendToClient(data)
-            else:
-                data = {'action': 'playAgainRequest', 
-                        'count' : self.playAgainCount}
-                self.connection.sendToServer(data)
-
-    def handlePlayAgain(self):
-        if self.playAgainCount == 2 and self.isHost:
-            self.resetGame()
-            self.notifyReset()
-            self.communicator.setupGameSignal.emit()
-        elif self.playAgainCount == 2:
-            data = {'action': 'playAgainRequest', 
-                    'count' : self.playAgainCount}
-            self.connection.sendToServer(data)
-
-    def resetGame(self):
-        self.deck = []
-        self.pile = []
-        self.currentPlayerIndex = 0
-        self.selectedCards = []
-        self.playCardButtons = []
-        self.topCardSelectionPhase = True
-        self.players = [Player("Player 1"), Player("Player 2")]
-        self.view.clearSelectionLayout()
-        self.communicator.resetGameSignal.emit()
-    
-    def stopTimer(self, winner):
-        if hasattr(self, 'timer'):
-            self.timer.stop()
-        QApplication.processEvents()
-        time.sleep(1.2)
-        self.showGameOverDialog(winner)
-    
-    def startGameLoop(self):
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.gameLoop)
-        self.timer.start(1000)  # Run the game loop every second
-
-    def gameLoop(self):
-        currentPlayer = self.players[self.currentPlayerIndex]
-        self.view.updateUI(currentPlayer, len(self.deck), self.pile)
-
-    def pickUpPile(self):
-        if not self.pile:
-            return
-        currentPlayer = self.players[self.currentPlayerIndex]
-        currentPlayer.pickUpPile(self.pile)
-        print(f"{currentPlayer.name} picks up the pile\n")
-        self.view.pileLabel.setText("Pile: Empty")
-        self.sevenSwitch = False
-        self.updateUI()
-        self.changeTurn()
-        self.sendGameState()
-        self.view.placeButton.setText("Opponent's Turn...")
-
-    def setupGame(self):
-        if self.isHost:
-            self.deck = self.createDeck()
-            random.shuffle(self.deck)
-            self.dealInitialCards(self.players[0])
-            self.dealInitialCards(self.players[1])
-            self.sendDeckToClient()
-            self.view.updatePlayerHandButtons(self.players[0].hand)
-        else:
-            self.view.updatePlayerHandButtons(self.players[1].hand)
-        self.view.showTopCardSelection()
-
-    def proceedWithGameSetup(self):
-        self.communicator.proceedWithGameSetupSignal.emit()
-
-    def proceedWithGameSetupOnMainThread(self):
-        self.topCardSelectionPhase = False
-        self.updateUI()
-        self.view.pileLabel.setText("Pile: Empty")
-        if self.playerType == "Player 2":
-            self.view.disablePlayerHand()
-            self.view.pickUpPileButton.setDisabled(True)
-        self.startGameLoop()
-
-    def createDeck(self):
-        suits = ['clubs', 'spades', 'hearts', 'diamonds']
-        return [(rank, suit, False, False) for rank in RANKS for suit in suits]
-
-    def dealInitialCards(self, player):
-        player.bottomCards = [(card[0], card[1], False, True) for card in self.deck[:3]]
-        player.hand = self.deck[3:9]
-        self.deck = self.deck[9:]
-
-    def sendDeckToClient(self):
-        data = {'action': 'deckSync', 
-                'deck': self.deck, 
-                'player2bot': self.players[1].bottomCards,
-                'player2top': self.players[1].topCards,
-                'player2hand': self.players[1].hand
-            }
-        self.connection.sendToClient(data)
-                
-    def receiveDeckFromServer(self, data):
-        self.deck = data['deck']
-        self.players[1].bottomCards = data['player2bot']
-        self.players[1].topCards = data['player2top']
-        self.players[1].hand = data['player2hand']
-        self.view.updatePlayerHandButtons(self.players[1].hand)
-        self.view.placeButton.setText("Opponent's Turn...")
-
-    def checkBothPlayersConfirmed(self):
-        time.sleep(1)
-        if all(player.topCards for player in self.players):
-            self.sendStartGameSignal()
-            self.proceedWithGameSetup()
-    
-    def sendStartGameSignal(self):
-        data = {'action': 'startGame', 'gameState': ""}
-        if self.isHost:
-            self.connection.sendToClient(data)
-        else:
-            self.connection.sendToServer(data)
-    
-    def updateUI(self):
-        self.view.enableOpponentHandNotClickable()
-        currentPlayer = self.players[self.currentPlayerIndex]
-        if not self.topCardSelectionPhase:
-            self.view.updateUI(currentPlayer, len(self.deck), self.pile)
-            if self.isHost:
-                self.view.updatePlayerHandButtons(self.players[0].hand)
-                self.view.updateOpponentHandButtons(self.players[1].hand)
-                self.view.updatePlayerTopCardButtons(self.players[0].topCards)
-                self.view.updateOpponentTopCardButtons(self.players[1].topCards)
-                self.view.updatePlayerBottomCardButtons(self.players[0].bottomCards)
-                self.view.updateOpponentBottomCardButtons(self.players[1].bottomCards)
-            else:
-                self.view.updatePlayerHandButtons(self.players[1].hand)
-                self.view.updateOpponentHandButtons(self.players[0].hand)
-                self.view.updatePlayerTopCardButtons(self.players[1].topCards)
-                self.view.updateOpponentTopCardButtons(self.players[0].topCards)
-                self.view.updatePlayerBottomCardButtons(self.players[1].bottomCards)
-                self.view.updateOpponentBottomCardButtons(self.players[0].bottomCards)
-        if not self.gameOver:
-            if self.isSessionPlayer():
-                self.updatePlayableCards()
-            else:
-                self.view.disablePlayerHand()
-
     def prepareCardPlacement(self, cardIndex, cardLabel):
-        card = self.players[self.currentPlayerIndex].hand[cardIndex]
+        """
+        Handle selection and deselection of cards for placement.
+        """
+        widget = self.playerHand.itemAt(cardIndex).widget()
+        if not widget:
+            return  # Skip if there's no widget at the index
+
+        # Use self.controller.handCards to get the actual card data
+        card = self.controller.handCards[cardIndex]
+
         if (card, cardLabel) in self.selectedCards:
             self.selectedCards.remove((card, cardLabel))
             cardLabel.setStyleSheet("border: 0px solid black; background-color: transparent;")
         else:
             self.selectedCards.append((card, cardLabel))
-            cardLabel.setStyleSheet("border: 0px solid black; background-color: blue;")
+            cardLabel.setStyleSheet("border: 2px solid blue; background-color: transparent;")
 
         selectedCardRank = card[0]
-        handIndex = 0
-        if not self.selectedCards:
-            for i in range(self.view.playerHandLayout.count()):
-                lbl = self.view.playerHandLayout.itemAt(i).widget()
-                if lbl is None or (isinstance(lbl, QLabel) and lbl.pixmap() is None):
-                    continue
-                if handIndex >= len(self.players[self.currentPlayerIndex].hand):
-                    break
-                handCard = self.players[self.currentPlayerIndex].hand[handIndex]
-                if handCard[3] or self.isCardPlayable(handCard):
+
+        # Enable or disable widgets based on the selected cards
+        for i in range(self.playerHand.count()):
+            lbl = self.playerHand.itemAt(i).widget()
+            if lbl:
+                handCard = self.controller.handCards[i]
+                if not self.selectedCards or handCard[0] == selectedCardRank:
                     lbl.setEnabled(True)
-                handIndex += 1
-        else:
-            handIndex = 0
-            for i in range(self.view.playerHandLayout.count()):
-                lbl = self.view.playerHandLayout.itemAt(i).widget()
-                if lbl is None or (isinstance(lbl, QLabel) and lbl.pixmap() is None):
-                    continue
-                if handIndex >= len(self.players[self.currentPlayerIndex].hand):
-                    break
-                handCard = self.players[self.currentPlayerIndex].hand[handIndex]
-                if handCard[0] == selectedCardRank or (handCard, lbl) in self.selectedCards:
-                    lbl.setEnabled(True)
-                elif not handCard[3]:
+                else:
                     lbl.setEnabled(False)
-                handIndex += 1
-        self.view.placeButton.setEnabled(len(self.selectedCards) > 0)
-        if self.view.placeButton.text() == "Place":
-            self.view.placeButton.setText("Select A Card")
+        self.placeButton.setEnabled(len(self.selectedCards) > 0)
+        if self.placeButton.text() == "Place":
+            self.placeButton.setText("Select A Card")
         else:
-            self.view.placeButton.setText("Place")
+            self.placeButton.setText("Place")
 
-    def isCardPlayable(self, card):
-        if self.pile:
-            topCard = self.pile[-1]
-        else:
-            topCard = None
-        if self.sevenSwitch:
-            return VALUES[card[0]] <= 7 or card[0] in ['2', '10']
-        if not topCard:
-            return True
-        return card[0] == '2' or card[0] == '10' or VALUES[card[0]] >= VALUES[topCard[0]]
-
-    def placeCard(self):
-        currentPlayer = self.players[self.currentPlayerIndex]
-        playedCards = []
-        pickUp = False
-
-        for card, button in sorted(self.selectedCards, key=lambda x: currentPlayer.hand.index(x[0])):
-            if card[3] and not self.isCardPlayable(card):
-                playedCards.append(card)
-                for i, card in enumerate(playedCards):
-                    self.pile.append(currentPlayer.hand.pop(currentPlayer.hand.index(playedCards[i])))
-                    self.pile[-1] = (card[0], card[1], card[2], False)
-                    self.view.revealCard(button, card)
-                pickUp = True
-                button.setParent(None)
-                button.deleteLater()
-            else:
-                playedCards.append(card)
-                currentPlayer.playCard(currentPlayer.hand.index(card), self.pile)
-                self.view.revealCard(button, card)
-                button.setParent(None)
-                button.deleteLater()
-
-        if pickUp:
-            topCard = self.pile[-1]
-            pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.view.pileLabel.setPixmap(pixmap)
-            QCoreApplication.processEvents()
-            time.sleep(1)
-            currentPlayer.pickUpPile(self.pile)
-            print(f"{currentPlayer.name} picks up the pile\n")
-            self.view.pileLabel.setText("Pile: Empty")
-            self.sevenSwitch = False
-            for card in reversed(currentPlayer.hand):
-                if card[3]:
-                    currentPlayer.bottomCards.append(currentPlayer.hand.pop(currentPlayer.hand.index(card)))
-            self.updateUI()
-            self.changeTurn()
-            self.sendGameState()
-            self.view.placeButton.setText("Opponent's Turn...")
-            return
-
-        self.selectedCards = []
-        print(f"{currentPlayer.name} plays {', '.join([f'{card[0]} of {card[1]}' for card in playedCards])}\n")
-
-        while len(currentPlayer.hand) < 3 and self.deck:
-            currentPlayer.hand.append(self.deck.pop(0))
-
-        self.view.updatePlayerHandButtons(currentPlayer.hand)
-
-        if self.checkFourOfAKind():
-            print("Four of a kind! Clearing the pile.\n")
-            self.sevenSwitch = False
-            topCard = self.pile[-1]
-            pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.view.pileLabel.setPixmap(pixmap)
-            self.checkGameState()
-            self.updateUI()
-            self.sendGameState()
-            self.pile.clear()
-            self.updateUI()
-            self.view.pileLabel.setText("Bombed!!!")
-            self.view.placeButton.setText("Select A Card")
-            return
-        
-        if '2' in [card[0] for card in playedCards]:
-            self.sevenSwitch = False
-            topCard = self.pile[-1]
-            pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.view.pileLabel.setPixmap(pixmap)
-            self.updateUI()
-            self.checkGameState()
-            self.sendGameState()
-            self.view.placeButton.setText("Select A Card")
-        elif '10' in [card[0] for card in playedCards]:
-            self.sevenSwitch = False
-            topCard = self.pile[-1]
-            pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.view.pileLabel.setPixmap(pixmap)
-            self.checkGameState()
-            self.updateUI()
-            self.sendGameState()
-            self.pile.clear()
-            self.updateUI()
-            self.view.pileLabel.setText("Bombed!!!")
-            self.view.placeButton.setText("Select A Card")
-        else:
-            if '7' in [card[0] for card in playedCards]:
-                self.sevenSwitch = True
-            else:
-                self.sevenSwitch = False
-            self.view.placeButton.setEnabled(False)
-            topCard = self.pile[-1]
-            pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.view.pileLabel.setPixmap(pixmap)
-            self.checkGameState()
-            self.updateUI()
-            if not self.gameOver:
-                self.changeTurn()
-            self.sendGameState()
-            self.view.placeButton.setText("Opponent's Turn...")
-        if self.gameOver:
-            self.gameOverSignal.emit(currentPlayer.name)
-
-    def changeTurn(self):
-        self.currentPlayerIndex = (self.currentPlayerIndex + 1) % len(self.players)
-        self.selectedCards = []
-        self.updateUI()
-        self.view.disablePlayerHand()
-        self.view.pickUpPileButton.setEnabled(False)
-
-    def checkFourOfAKind(self):
-        if len(self.pile) < 4:
-            return False
-        return len(set(card[0] for card in self.pile[-4:])) == 1
-
-    def isSessionPlayer(self):
-        if self.isHost:
-            return self.currentPlayerIndex == 0 and self.playerType == "Player 1"
-        else:
-            return self.currentPlayerIndex == 1 and self.playerType == "Player 2"
     
-    def checkGameState(self):
-        currentPlayer = self.players[self.currentPlayerIndex]
-        if not currentPlayer.hand and not self.deck:
-            if currentPlayer.topCards:
-                currentPlayer.hand = currentPlayer.topCards
-                currentPlayer.topCards = []
-                if self.isSessionPlayer():
-                    self.view.updatePlayerHandButtons(currentPlayer.hand)
-                    self.view.updatePlayerTopCardButtons(currentPlayer.topCards)
-                else:
-                    self.view.updateOpponentHandButtons(currentPlayer.hand)
-                    self.view.updateOpponentTopCardButtons(currentPlayer.topCards)
-            elif currentPlayer.bottomCards:
-                currentPlayer.hand = currentPlayer.bottomCards
-                currentPlayer.bottomCards = []
-                if self.isSessionPlayer():
-                    self.view.updatePlayerHandButtons(currentPlayer.hand)
-                    self.view.updatePlayerBottomCardButtons(currentPlayer.bottomCards)
-                else:
-                    self.view.updateOpponentHandButtons(currentPlayer.hand)
-                    self.view.updateOpponentBottomCardButtons(currentPlayer.bottomCards)
-            elif not currentPlayer.bottomCards:
-                placeholder = ("", "", False, False)
-                currentPlayer.hand.append(placeholder)
-                self.view.pickUpPileButton.setDisabled(True)
-                self.view.placeButton.setDisabled(True)
-                for button in self.playCardButtons:
-                    button.setDisabled(True)
-                print(f"{currentPlayer.name} wins!")
-                self.gameOver = True
+    def updateTopCards(self):
+        """
+        Update the current player's top cards display (face up).
+        """
+        # Clear top cards layout
+        while self.playerTop.count():
+            item = self.playerTop.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
 
-    def updatePlayableCards(self):
-        currentPlayer = self.players[self.currentPlayerIndex]
-        handIndex = 0  # To keep track of the actual card index in the player's hand
+        # Add top cards
+        for card in self.controller.topCards:
+            button = QLabel()
+            button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
+            pixmap = QPixmap(fr"_internal\palaceData\cards\{card[0].lower()}_of_{card[1].lower()}.png").scaled(
+                CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+            button.setPixmap(pixmap)
+            button.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.playerTop.addWidget(button)
 
-        for i in range(self.view.playerHandLayout.count()):
-            item = self.view.playerHandLayout.itemAt(i)
-            if item is None:
-                continue
-            lbl = item.widget()
-            if lbl is None or (isinstance(lbl, QLabel) and lbl.pixmap() is None):  # Check if it's the spacer
-                continue  # Skip the spacer
+    def updateBottomCards(self):
+        """
+        Update the current player's bottom cards display (face down).
+        """
+        # Clear bottom cards layout
+        while self.playerBottom.count():
+            item = self.playerBottom.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
 
-            if handIndex >= len(currentPlayer.hand):
-                break  # Prevent index out of range error
+        # Add bottom cards (face down)
+        for _ in range(3):
+            button = QLabel()
+            button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
+            button.setStyleSheet("border: 2px solid transparent; background-color: transparent;")
+            pixmap = QPixmap(fr"_internal\palaceData\cards\back.png").scaled(
+                CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+            button.setPixmap(pixmap)
+            button.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.playerBottom.addWidget(button)
 
-            handCard = currentPlayer.hand[handIndex]
-            if handCard[0] in ['2', '10'] or handCard[3] or self.isCardPlayable(handCard):
-                lbl.setEnabled(True)
-            else:
-                lbl.setEnabled(False)
-            
-            handIndex += 1
-        
-    def sendGameState(self):
-        if self.connection:
-            data = self.serializeGameState()
-            if isinstance(self.connection, Server):
-                self.connection.sendToClient(data)
-            else:
-                self.connection.sendToServer(data)
-            if self.gameOver:
-                data = {
-                    'action': 'gameOver',
-                    'winner': self.players[self.currentPlayerIndex].name
-                }
-                if isinstance(self.connection, Server):
-                    self.connection.sendToClient(data)
-                else:
-                    self.connection.sendToServer(data)
-
-    def receiveGameState(self, data):
-        self.deserializeGameState(data)
-        if self.pile and self.pile[-1][0] == "2":
-            pass
-        elif self.pile and self.pile[-1][0] == "10":
-            self.pile.clear()
-            self.view.pileLabel.setText("Bombed!!!")
-        else:
-            self.view.placeButton.setText("Select a Card")
-            self.view.pickUpPileButton.setEnabled(True)
-
-    def serializeGameState(self):
-        return {
-            'action': 'playCard',
-            'players': [
-                {
-                    'hand': self.players[0].hand,
-                    'topCards': self.players[0].topCards,
-                    'bottomCards': self.players[0].bottomCards
-                },
-                {
-                    'hand': self.players[1].hand,
-                    'topCards': self.players[1].topCards,
-                    'bottomCards': self.players[1].bottomCards
-                }
-            ],
-            'deck': self.deck,
-            'pile': self.pile,
-            'seven': self.sevenSwitch,
-            'currentPlayerIndex': self.currentPlayerIndex,
+    def updateOtherPlayerCards(self, playerIndex, handCards, topCards, bottomCards):
+        # Mapping based on self.playerIndex
+        layoutMap = {
+            'hand': {},
+            'top': {},
+            'bottom': {}
         }
 
-    def deserializeGameState(self, data):
-        self.deck = data['deck']
-        self.pile = data['pile']
-        self.currentPlayerIndex = data['currentPlayerIndex']
-        self.sevenSwitch = data['seven']
-        self.players[0].hand = data['players'][0]['hand']
-        self.players[0].topCards = data['players'][0]['topCards']
-        self.players[0].bottomCards = data['players'][0]['bottomCards']
-        self.players[1].hand = data['players'][1]['hand']
-        self.players[1].topCards = data['players'][1]['topCards']
-        self.players[1].bottomCards = data['players'][1]['bottomCards']
-        self.communicator.updateUISignal.emit()
+        if self.numPlayers == 2:
+            if self.playerIndex == 1:
+                layoutMap['hand'] = {2: self.topHand}
+                layoutMap['top'] = {2: self.topTop}
+                layoutMap['bottom'] = {2: self.topBottom}
+            elif self.playerIndex == 2:
+                layoutMap['hand'] = {1: self.topHand}
+                layoutMap['top'] = {1: self.topTop}
+                layoutMap['bottom'] = {1: self.topBottom}
+        elif self.numPlayers == 3:
+            if self.playerIndex == 1:
+                layoutMap['hand'] = {2: self.leftHand, 3: self.topHand}
+                layoutMap['top'] = {2: self.leftTop, 3: self.topTop}
+                layoutMap['bottom'] = {2: self.leftBottom, 3: self.topBottom}
+            elif self.playerIndex == 2:
+                layoutMap['hand'] = {3: self.leftHand, 1: self.topHand}
+                layoutMap['top'] = {3: self.leftTop, 1: self.topTop}
+                layoutMap['bottom'] = {3: self.leftBottom, 1: self.topBottom}
+            elif self.playerIndex == 3:
+                layoutMap['hand'] = {1: self.leftHand, 2: self.topHand}
+                layoutMap['top'] = {1: self.leftTop, 2: self.topTop}
+                layoutMap['bottom'] = {1: self.leftBottom, 2: self.topBottom}
+        elif self.numPlayers == 4:
+            if self.playerIndex == 1:
+                layoutMap['hand'] = {2: self.leftHand, 3: self.topHand, 4: self.rightHand}
+                layoutMap['top'] = {2: self.leftTop, 3: self.topTop, 4: self.rightTop}
+                layoutMap['bottom'] = {2: self.leftBottom, 3: self.topBottom, 4: self.rightBottom}
+            elif self.playerIndex == 2:
+                layoutMap['hand'] = {3: self.leftHand, 4: self.topHand, 1: self.rightHand}
+                layoutMap['top'] = {3: self.leftTop, 4: self.topTop, 1: self.rightTop}
+                layoutMap['bottom'] = {3: self.leftBottom, 4: self.topBottom, 1: self.rightBottom}
+            elif self.playerIndex == 3:
+                layoutMap['hand'] = {4: self.leftHand, 1: self.topHand, 2: self.rightHand}
+                layoutMap['top'] = {4: self.leftTop, 1: self.topTop, 2: self.rightTop}
+                layoutMap['bottom'] = {4: self.leftBottom, 1: self.topBottom, 2: self.rightBottom}
+            elif self.playerIndex == 4:
+                layoutMap['hand'] = {1: self.leftHand, 2: self.topHand, 3: self.rightHand}
+                layoutMap['top'] = {1: self.leftTop, 2: self.topTop, 3: self.rightTop}
+                layoutMap['bottom'] = {1: self.leftBottom, 2: self.topBottom, 3: self.rightBottom}
+
+        # Update layouts for hand, top, and bottom cards
+        for cardType, cards, layout in zip(
+            ['hand', 'top', 'bottom'],
+            [handCards, topCards, bottomCards],
+            [layoutMap['hand'].get(playerIndex), layoutMap['top'].get(playerIndex), layoutMap['bottom'].get(playerIndex)]
+        ):
+            if not layout:
+                continue  # Invalid playerIndex for the current view
+
+            # Clear the existing layout
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()
+
+            # Add the new cards to the layout
+            for card in cards:
+                button = QLabel()
+                rotate = False
+                rotatedDimensions = (BUTTON_HEIGHT, BUTTON_WIDTH)
+                standardDimensions = (BUTTON_WIDTH, BUTTON_HEIGHT)
+                pixmapDimensions = (CARD_WIDTH, CARD_HEIGHT)
+                
+                # Determine layout properties
+                if layout in [getattr(self, 'leftHand', None), getattr(self, 'rightHand', None),
+                            getattr(self, 'leftTop', None), getattr(self, 'rightTop', None),
+                            getattr(self, 'leftBottom', None), getattr(self, 'rightBottom', None)]:
+                    button.setFixedSize(*rotatedDimensions)
+                    rotate = True
+                else:
+                    button.setFixedSize(*standardDimensions)
+
+                # Load the card image
+                if cardType == 'bottom':  # Bottom cards (face down)
+                    pixmap = QPixmap(fr"_internal\palaceData\cards\back.png").scaled(
+                        *pixmapDimensions, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                    )
+                else:  # Top and hand cards (face up)
+                    pixmap = QPixmap(fr"_internal\palaceData\cards\{card[0].lower()}_of_{card[1].lower()}.png").scaled(
+                        *pixmapDimensions, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                    )
+
+                # Apply rotation if necessary
+                if rotate:
+                    rotationAngle = 90 if layout in [getattr(self, 'leftHand', None), getattr(self, 'leftTop', None), getattr(self, 'leftBottom', None)] else -90
+                    transform = QTransform().rotate(rotationAngle)
+                    pixmap = pixmap.transformed(transform, Qt.TransformationMode.SmoothTransformation).scaled(CARD_HEIGHT, CARD_WIDTH, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+                # Set pixmap and alignment
+                button.setPixmap(pixmap)
+                button.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                layout.addWidget(button)
     
-    def startHostServerThread(self):
-        thread = threading.Thread(target=self.connection.handleClient, daemon=True)
-        self.threads.append(thread)
-        thread.start()
-
-    def startClientServerThread(self):
-        thread = threading.Thread(target=self.connection.handleServer, daemon=True)
-        self.threads.append(thread)
-        thread.start()
-
-    def disconnect(self):
-        self.gameOver = True
-        self.closeThreads()
-        if self.connection:
-            self.connection.close()
-
-    def closeThreads(self):
-        for thread in self.threads:
-            if thread.is_alive():
-                thread.join(timeout=1)
+    def updateConfirmButton(self, selectedCount):
+        """
+        Enable the confirm button only when exactly 3 cards are selected.
+        """
+        self.confirmButton.setEnabled(selectedCount == 3)
     
-    def closeConnections(self):
-        if self.connection:
-            self.connection.close()
-       
-def main():
-    global scalingFactorWidth
-    global scalingFactorHeight
+    def setPlayerHandEnabled(self, enabled):
+        for i in range(self.playerHand.count()):
+            widget = self.playerHand.itemAt(i).widget()
+            if widget:
+                widget.setEnabled(enabled)
+    
+    def startMainView(self):
+        """
+        Transition to the main game phase by displaying the center console.
+        """
+        # Remove confirm button
+        self.confirmButton.hide()
+        self.placeButton.show()
+        self.deckLabel.show()
+        self.pickUpPileButton.show()
+        self.pileLabel.setText("Pile: Empty")
+        self.pileLabel.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
+        self.currentPlayerLabel.setText(f"Current Player: {self.controller.currentPlayer}")
+        self.currentPlayerLabel.show()
+        
+        if self.controller.currentPlayer == self.controller.playerIndex:
+            self.setPlayerHandEnabled(True)
+        else:
+            self.setPlayerHandEnabled(False)
+            
+class GameController(QObject):
+    indexAssigned = Signal(int)
+    selectedCardsChanged = Signal(int)
+    updatePlayerHandSignal = Signal(list)
+    updateTopCardsSignal = Signal(list)
+    updateBottomCardsSignal = Signal(list)
+    updateOtherPlayerCardsSignal = Signal(int, list, list, list)
+    startMainViewSignal = Signal()         
+    confirmTopCardsSignal = Signal(int)
+
+    topCardSelectionPhase = True
+
+    def __init__(self, playerIndex, handCards, bottomCards, numPlayers, broadcastUpdate):
+        super().__init__()
+        self.playerIndex = playerIndex
+        self.numPlayers = numPlayers
+        self.selectedCards = []  
+        self.topCards = []     
+        self.handCards = handCards  
+        self.bottomCards = bottomCards 
+        self.broadcastUpdate = broadcastUpdate
+        self.topCardConfirms = 0
+        self.currentPlayer = None
+        
+        self.allPlayerCards = {
+            self.playerIndex: {
+                'handCards': self.handCards,
+                'topCards': self.topCards,
+                'bottomCards': self.bottomCards,
+            }
+        }
+
+    def startGame(self):
+        self.updatePlayerHandSignal.emit(self.handCards)
+        
+    def prepareCardPlacement(self, cardIndex, cardLabel):
+        """
+        Handle selection and deselection of cards for placement.
+        """
+        card = self.handCards[cardIndex]
+
+        if self.topCardSelectionPhase:
+            # Limit to 3 selected cards during top card selection phase
+            if (cardIndex, card) in self.selectedCards:
+                self.selectedCards.remove((cardIndex, card))
+                cardLabel.setStyleSheet("border: 2px solid transparent; background-color: transparent;")
+            elif len(self.selectedCards) < 3:
+                self.selectedCards.append((cardIndex, card))
+                cardLabel.setStyleSheet("border: 2px solid blue; background-color: transparent;")
+
+            # Enable the confirm button if exactly 3 cards are selected
+            self.selectedCardsChanged.emit(len(self.selectedCards))
+
+    def confirmTopCards(self):
+        # Move selected cards to top cards
+        for index, card in self.selectedCards:
+            self.topCards.append(card)
+            self.handCards[index] = None
+
+        self.handCards = [card for card in self.handCards if card is not None]
+        self.selectedCards.clear()
+
+        self.topCardSelectionPhase = False
+        self.updatePlayerHandSignal.emit(self.handCards)
+        self.updateTopCardsSignal.emit(self.topCards)
+        self.updateBottomCardsSignal.emit(self.bottomCards)
+
+        # Notify the host about confirmation
+        self.topCardConfirms += 1
+        self.broadcastCards()
+        self.broadcastUpdate('confirmedTopCards', {})
+        if self.playerIndex == 1:
+            self.checkAllPlayersConfirmed()
+    
+    def checkAllPlayersConfirmed(self):        
+        if self.topCardConfirms == self.numPlayers:
+            if self.playerIndex == 1:
+                highestPlayer, rankTotals = self.calculateRankTotals()
+                print(f"Rank totals for top cards: {rankTotals}")
+                print(f"Player {highestPlayer} has the highest rank total.")
+                self.startMainGame(highestPlayer)
+            self.broadcastUpdate('startMainGame', {"playerIndex": highestPlayer})
+    
+    def drawCard(self, newCard):
+        """
+        Add a new card to the player's hand and broadcast the update.
+        """
+        self.handCards.append(newCard)
+        self.updatePlayerHandSignal.emit(self.handCards)
+        self.broadcastCards()
+    
+    def broadcastCards(self):
+        """
+        Broadcast the current player's handCards to the host for relaying.
+        """
+        payload = {
+            'playerIndex': self.playerIndex,
+            'handCards': self.handCards,
+            'topCards': self.topCards,
+            'bottomCards': self.bottomCards
+        }
+        self.broadcastUpdate('updateCards', payload)
+        self.allPlayerCards[self.playerIndex] = {
+            'handCards': self.handCards,
+            'topCards': self.topCards,
+            'bottomCards': self.bottomCards,
+        }
+    
+    def updateOtherPlayerHand(self, playerIndex, handCards, topCards, bottomCards):
+        """
+        Update the hand cards of another player.
+        """
+        self.allPlayerCards[playerIndex] = {
+            'handCards': handCards,
+            'topCards': topCards,
+            'bottomCards': bottomCards,
+        }
+        if playerIndex != self.playerIndex:  # Ensure it's not updating its own hand
+            self.updateOtherPlayerCardsSignal.emit(playerIndex, handCards, topCards, bottomCards)
+    
+    def calculateRankTotals(self):
+        """
+        Calculate the rank totals for each player's top cards and determine the player with the highest total.
+        """
+        rankTotals = {}
+        for playerIndex, cards in self.allPlayerCards.items():
+            topCards = cards.get('topCards', [])
+            total = sum(VALUES[card[0]] for card in topCards)  # Calculate total rank values
+            rankTotals[playerIndex] = total
+
+        # Find the player with the highest total
+        highestPlayer = max(rankTotals, key=rankTotals.get)
+        return highestPlayer, rankTotals
+
+    def startMainGame(self, highestPlayer):
+        """
+        Transition to the main game phase, calculate rank totals, and identify the player with the highest rank.
+        """
+        self.currentPlayer = highestPlayer
+        # Notify all players about the rank totals and highest player
+        self.startMainViewSignal.emit()
+        
+    
+### Main Application ###
+if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyleSheet(Dark)
-    screen = app.primaryScreen()
-    screenSize = screen.size()
-    screenWidth = screenSize.width()
-    screenHeight = screenSize.height()
-    scalingFactorWidth = screenWidth / 1920
-    scalingFactorHeight = screenHeight / 1080
-    communicator = SignalCommunicator()
-    mainWindow = HomeScreen(communicator)  # Create the main window
-    mainWindow.show()
-    sys.exit(app.exec())
+    homeMenu = HomeMenu()
+    def onExit():
+        # Ensure all resources are cleaned up
+        if hasattr(homeMenu, 'localGame') and homeMenu.localGame:
+            homeMenu.localGame.close()
+        if hasattr(homeMenu, 'onlineMenu') and homeMenu.onlineMenu:
+            homeMenu.onlineMenu.close()
 
-if __name__ == '__main__':
-    main()
+    app.aboutToQuit.connect(onExit)  # Ensure cleanup on app exit
+    homeMenu.show()
+    sys.exit(app.exec())
