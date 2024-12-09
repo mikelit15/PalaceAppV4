@@ -6,8 +6,8 @@ import json
 import time
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,\
-    QTextEdit, QGridLayout, QFrame, QSpacerItem, QSizePolicy)
-from PySide6.QtGui import QPixmap, QIcon, QTransform, QPainter, QFontMetrics
+    QTextEdit, QGridLayout, QSpacerItem, QSizePolicy)
+from PySide6.QtGui import QPixmap, QIcon, QTransform, QPainter
 from PySide6.QtCore import Qt, QRect, QObject, Signal
 import qdarktheme
 
@@ -92,7 +92,7 @@ BUTTON_WIDTH = 66
 BUTTON_HEIGHT = 87
 
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
-VALUES = {'2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14}
+VALUES = {'3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,'J': 10, 'Q': 11, 'K': 12, 'A': 13, '2': 14, '10': 15}
 
 ### Home Screen ###
 class HomeMenu(QWidget):
@@ -214,7 +214,7 @@ class HostLobby(QWidget):
         self.server = None
         self.hostGameView = None
         self.clients = {}  # Map client sockets to indices
-        self.next_index = 2  # Host is always Player 1
+        self.nextIndex = 2  # Host is always Player 1
         self.numPlayers = None
         self.hostController = None
         self.initUI()
@@ -259,31 +259,31 @@ class HostLobby(QWidget):
     def acceptConnections(self):
         while self.server:
             try:
-                client_socket, addr = self.server.accept()
+                clientSocket, addr = self.server.accept()
                 if len(self.clients) < 3:  # Max 4 players (host + 3 clients)
-                    index = self.next_index
-                    self.clients[client_socket] = index
-                    self.next_index += 1
+                    index = self.nextIndex
+                    self.clients[clientSocket] = index
+                    self.nextIndex += 1
                     self.logText.append(f"Player {index} connected from {addr}.")
                     
                     # Notify the client of their player index
-                    index_data = json.dumps({"action": "setIndex", "index": index})
-                    client_socket.send(index_data.encode())
+                    indexData = json.dumps({"action": "setIndex", "index": index})
+                    clientSocket.send(indexData.encode())
                     
-                    threading.Thread(target=self.handleClient, args=(client_socket,), daemon=True).start()
+                    threading.Thread(target=self.handleClient, args=(clientSocket,), daemon=True).start()
                     self.updatePlayerCount()
                 else:
-                    client_socket.send(b"Lobby full.")
-                    client_socket.close()
+                    clientSocket.send(b"Lobby full.")
+                    clientSocket.close()
             except Exception as e:
                 self.logText.append(f"Error accepting connections: {e}")
                 break
 
-    def handleClient(self, client_socket):
-        index = self.clients[client_socket]
+    def handleClient(self, clientSocket):
+        index = self.clients[clientSocket]
         try:
             while True:
-                message = client_socket.recv(1024).decode()
+                message = clientSocket.recv(1024).decode()
                 if not message:
                     break  # Client disconnected
                 try:
@@ -294,39 +294,48 @@ class HostLobby(QWidget):
                         topCards = data['topCards']
                         bottomCards = data['bottomCards']
                         self.hostController.updateOtherPlayerHand(playerIndex, handCards, topCards, bottomCards)
-                        self.broadcastToClients('updateCards', data, exclude=client_socket)
+                        self.broadcastToClients('updateCards', data, exclude=clientSocket)
                     elif data['action'] == 'confirmedTopCards':
                         self.hostController.topCardConfirms += 1
                         self.hostController.checkAllPlayersConfirmed()
                     elif data['action'] == 'startMainGame':
-                        self.hostController.startMainGame()
+                        self.hostController.startMainGame('startMainGame', {})
+                        self.broadcastToClients('startMainGame', {})
+                    elif data['action'] == 'updateCurrentPlayer':
+                        self.hostGameView.updateCurrentPlayer(data['currentPlayer'])
+                        self.hostController.currentPlayer = data['currentPlayer']
+                        self.broadcastToClients('updateCurrentPlayer', data, exclude=clientSocket)
+                    elif data['action'] == 'updateDeck':
+                        self.hostController.deck = data['deck']
+                        self.hostGameView.deckLabel.setText(f"Draw Deck:\n\n{len(data['deck'])} cards remaining")
+                        self.broadcastToClients('updateDeck', data, exclude=clientSocket)
                 except json.JSONDecodeError:
                     self.logText.append(f"Received invalid data from Player {index}: {message}")
                     break
         except Exception as e:
             self.logText.append(f"Player {index} disconnected: {e}")
         finally:
-            self.clients.pop(client_socket, None)
-            self.next_index -= 1
+            self.clients.pop(clientSocket, None)
+            self.nextIndex -= 1
             self.reassignIndices()
             self.updatePlayerCount()
-            client_socket.close()
+            clientSocket.close()
 
     def reassignIndices(self):
         """
         Reassign indices after a player disconnects and notify all clients of the updated indices.
         """
         self.logText.append("Reassigning player indices after disconnection.")
-        new_clients = {}
-        new_index = 2  # Start at 2 since host is Player 1
+        newClients = {}
+        newIndex = 2  # Start at 2 since host is Player 1
 
-        for client_socket in self.clients.keys():
-            new_clients[client_socket] = new_index
-            index_data = json.dumps({"action": "setIndex", "index": new_index})
-            client_socket.send(index_data.encode())
-            new_index += 1
+        for clientSocket in self.clients.keys():
+            newClients[clientSocket] = newIndex
+            indexData = json.dumps({"action": "setIndex", "index": newIndex})
+            clientSocket.send(indexData.encode())
+            newIndex += 1
 
-        self.clients = new_clients
+        self.clients = newClients
     
     def updatePlayerCount(self):
         count = len(self.clients) + 1  # Host included
@@ -334,10 +343,10 @@ class HostLobby(QWidget):
         self.startButton.setEnabled(count > 1)  # Enabled only if 2+ players
     
     def broadcastToClients(self, action, data, exclude=None):
-        for client_socket in self.clients.keys():
-            if client_socket != exclude:  # Exclude the specified client
+        for clientSocket in self.clients.keys():
+            if clientSocket != exclude:  # Exclude the specified client
                 try:
-                    client_socket.send(json.dumps({"action": action, **data}).encode())
+                    clientSocket.send(json.dumps({"action": action, **data}).encode())
                 except Exception as e:
                     self.logText.append(f"Error broadcasting to client: {e}")
         
@@ -387,10 +396,11 @@ class HostLobby(QWidget):
         # Start the host's game view
         self.hide()
         players = data.get("players", {})
-        player_key = f'player1'
-        self.hostCards = players.get(player_key, {}).get('hand', [])
-        self.bottomCards = players.get(player_key, {}).get('bottomCards', [])
+        playerKey = f'player1'
+        self.hostCards = players.get(playerKey, {}).get('hand', [])
+        self.bottomCards = players.get(playerKey, {}).get('bottomCards', [])
         self.hostController = GameController(
+            self.deck,
             1,
             self.hostCards,
             self.bottomCards,
@@ -429,7 +439,7 @@ class JoinLobby(QWidget):
         self.client = None
         self.controller = None
         self.connected = False  # Track connection status
-        self.player_index = None  # Store the assigned player index
+        self.playerIndex = None  # Store the assigned player index
         self.numPlayers = None
         self.initUI()
         centerDialog(self, parent, "JoinLobby")
@@ -468,20 +478,20 @@ class JoinLobby(QWidget):
         self.setLayout(layout)
 
     def joinLobby(self):
-        host_ip = self.addressInput.text()
+        hostIP = self.addressInput.text()
         nickname = self.nicknameInput.text()
         try:
             self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.client.connect((host_ip, 12345))
+            self.client.connect((hostIP, 12345))
             self.logText.append("Connected to server.")
             self.connected = True
 
             # Send a join message to the host
-            initial_data = {
+            initialData = {
                 'action': 'join',
                 'nickname': nickname
             }
-            self.client.send(json.dumps(initial_data).encode())
+            self.client.send(json.dumps(initialData).encode())
 
             # Start listening to the server
             threading.Thread(target=self.listenToServer, daemon=True).start()
@@ -497,8 +507,8 @@ class JoinLobby(QWidget):
                 if message.startswith("{") and message.endswith("}"):  # Check for JSON format
                     data = json.loads(message)  # Deserialize JSON
                     if data.get("action") == "setIndex":
-                        self.player_index = data.get("index")
-                        self.logText.append(f"Assigned Player {self.player_index}")
+                        self.playerIndex = data.get("index")
+                        self.logText.append(f"Assigned Player {self.playerIndex}")
                     elif data.get("action") == "deckSync":
                         self.logText.append("Deck and player data received.")
                         self.processDeckSync(data)
@@ -508,11 +518,19 @@ class JoinLobby(QWidget):
                         topCards = data['topCards']
                         bottomCards = data['bottomCards']
                         self.controller.updateOtherPlayerHand(playerIndex, handCards, topCards, bottomCards)
+                    elif data['action'] == 'updateCurrentPlayer':
+                        self.controller.currentPlayer = data['currentPlayer']
+                        self.gameView.updateCurrentPlayer(data['currentPlayer'])
                     elif data['action'] == 'startMainGame':
-                        self.controller.startMainGame()
+                        playerIndex = data['playerIndex']
+                        self.controller.startMainGame(playerIndex)
                     elif data['action'] == 'confirmedTopCards':
                         self.controller.topCardConfirms += 1
                         self.controller.checkAllPlayersConfirmed()
+                    elif data['action'] == 'updateDeck':
+                        self.controller.deck = data['deck']
+                        self.gameView.deckLabel.setText(f"Draw Deck:\n\n{len(data['deck'])} cards remaining")
+
                 else:
                     self.logText.append(f"Message from server: {message}")
         except Exception as e:
@@ -538,17 +556,17 @@ class JoinLobby(QWidget):
     def confirmTopCards(self):
         if self.controller:
             self.controller.confirmTopCards()
-            payload = {'action': 'confirmTopCards', 'playerIndex': self.player_index}
+            payload = {'action': 'confirmTopCards', 'playerIndex': self.playerIndex}
             self.broadcastUpdate('confirmTopCards', payload)
     
     def processDeckSync(self, data):
         self.deck = data.get("deck", [])
         players = data.get("players", {})
-        player_key = f'player{self.player_index}'
+        playerKey = f'player{self.playerIndex}'
         self.numPlayers = data.get('numPlayers')
-        self.handCards = players.get(player_key, {}).get('hand', [])
-        self.bottomCards = players.get(player_key, {}).get('bottomCards', [])
-        self.startGameSignal.emit(self.player_index)
+        self.handCards = players.get(playerKey, {}).get('hand', [])
+        self.bottomCards = players.get(playerKey, {}).get('bottomCards', [])
+        self.startGameSignal.emit(self.playerIndex)
 
     def leaveServer(self):
         if self.client:
@@ -565,11 +583,12 @@ class JoinLobby(QWidget):
             self.hide()
             self.parent.show()
 
-    def startGame(self, player_index):
-        print(f"Starting game as Player {player_index}.")
+    def startGame(self, playerIndex):
+        print(f"Starting game as Player {playerIndex}.")
         self.hide()
         self.controller = GameController(
-            self.player_index,
+            self.deck,
+            self.playerIndex,
             self.handCards,
             self.bottomCards,
             self.numPlayers,
@@ -584,8 +603,9 @@ class GameView(QWidget):
     def __init__(self, controller, parentCoords, numPlayers):
         super().__init__()
         self.controller = controller
-        self.num_players = numPlayers
-        self.player_index = self.controller.player_index
+        self.numPlayers = numPlayers
+        self.playerIndex = self.controller.playerIndex
+        self.selectedCards = []
         self.initUI()
         centerDialog(self, parentCoords, "GameView")
         
@@ -595,9 +615,14 @@ class GameView(QWidget):
         self.controller.updateOtherPlayerCardsSignal.connect(self.updateOtherPlayerCards)
         self.controller.startMainViewSignal.connect(self.startMainView)
         self.controller.selectedCardsChanged.connect(self.updateConfirmButton)
+        self.controller.placeButtonStateChanged.connect(self.updatePlaceButton)
+        self.controller.updateCardStateSignal.connect(self.updateCardState)
+        self.controller.currentPlayerChangedSignal.connect(self.updateCurrentPlayer)
+        self.controller.updatePileSignal.connect(self.updatePile)
+        
         
     def initUI(self):
-        self.setWindowTitle(f'Palace Card Game - Player {self.player_index}')
+        self.setWindowTitle(f'Palace Card Game - Player {self.playerIndex}')
         self.setWindowIcon(QIcon(r"_internal\palaceData\palace.ico"))
         self.setGeometry(450, 75, 900, 900)
         self.layout = QGridLayout()
@@ -616,11 +641,11 @@ class GameView(QWidget):
         self.initCenterConsole()
 
         # Dynamic Layout Adjustment
-        if self.num_players == 2:
+        if self.numPlayers == 2:
             self.initTwoPlayerLayout()
-        elif self.num_players == 3:
+        elif self.numPlayers == 3:
             self.initThreePlayerLayout()
-        elif self.num_players == 4:
+        elif self.numPlayers == 4:
             self.initFourPlayerLayout()
         
         buttonsTopContainerLayout = QVBoxLayout()
@@ -634,12 +659,12 @@ class GameView(QWidget):
         self.placeButton = QPushButton("Select A Card")
         self.placeButton.setEnabled(False)
         self.placeButton.setFixedWidth(240)
-        # self.placeButton.clicked.connect(self.controller.placeCard)
+        self.placeButton.clicked.connect(self.controller.placeCard)
         self.placeButton.setVisible(False)
         
         buttonsTopContainerLayout.addWidget(self.spacerButton, alignment=Qt.AlignmentFlag.AlignCenter)
         buttonsBottomContainerLayout.addWidget(self.confirmButton, alignment=Qt.AlignmentFlag.AlignCenter)
-        # buttonsBottomContainerLayout.addWidget(self.placeButton, alignment=Qt.AlignmentFlag.AlignCenter)
+        buttonsBottomContainerLayout.addWidget(self.placeButton, alignment=Qt.AlignmentFlag.AlignCenter)
         self.layout.addLayout(buttonsTopContainerLayout, 0, 5, alignment=Qt.AlignmentFlag.AlignCenter)
         self.layout.addLayout(buttonsBottomContainerLayout, 12, 5, alignment=Qt.AlignmentFlag.AlignCenter)
         
@@ -649,44 +674,38 @@ class GameView(QWidget):
         """
         Initializes the center console with the deck, pile, and current player information.
         """
-        self.deckLabel = QLabel("Deck")
-        self.deckLabel.setFixedWidth(100)
-        self.deckLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.deckLabel = QLabel()
+        self.deckLabel.setFixedWidth(190)
         self.deckLabel.hide()
         
-        self.pileLabel = QLabel("\t     Select your 3 Top cards...")
-        self.pileLabel.setFixedWidth(100)
-        self.pileLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pileLabel = QLabel("\t\t    Select your 3 Top cards...")
 
         self.pickUpPileButton = QPushButton("Pick Up Pile")
         self.pickUpPileButton.setFixedWidth(125)
         # self.pickUpPileButton.clicked.connect(self.controller.pickUpPile)
         self.pickUpPileButton.hide()
+        
+        self.currentPlayerLabel = QLabel("")
+        self.currentPlayerLabel.hide()
 
         spacer = QSpacerItem(60, 1, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
         
         self.consoleLayout = QHBoxLayout()
-        self.consoleLayout.addWidget(self.deckLabel, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.consoleLayout.addWidget(self.deckLabel, alignment=Qt.AlignmentFlag.AlignCenter)
         self.consoleLayout.addWidget(self.pileLabel, alignment=Qt.AlignmentFlag.AlignCenter)
         self.consoleLayout.addItem(spacer)
-        self.consoleLayout.addWidget(self.pickUpPileButton, alignment=Qt.AlignmentFlag.AlignRight)
+        self.consoleLayout.addWidget(self.pickUpPileButton, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.centerContainer = QWidget()
-        self.centerContainer.setLayout(self.consoleLayout)
-        self.centerContainer.setFixedWidth(500)
-
-        self.currentPlayerLabel = QLabel("")
-        self.currentPlayerLabel.hide()
         self.centerLayout = QVBoxLayout()
         self.centerLayout.addWidget(QLabel(""))
         self.centerLayout.addWidget(self.currentPlayerLabel, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.centerLayout.addWidget(self.centerContainer, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.centerLayout.addLayout(self.consoleLayout)
         self.centerLayout.addWidget(QLabel(""))
         self.centerLayout.addWidget(QLabel(""))
 
-        self.layout.addLayout(self.centerLayout, 6, 5, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(self.centerLayout, 6, 5)
     
-    def initPlayerAreaTop(self, label_text, position):
+    def initPlayerAreaTop(self, labelText, position):
         """
         Helper function to initialize a player area (hand, top cards, bottom cards).
         """
@@ -694,7 +713,7 @@ class GameView(QWidget):
         handLayout = QHBoxLayout()
         layout.addLayout(handLayout)
         
-        handLabelLayout = QLabel(label_text)
+        handLabelLayout = QLabel(labelText)
         layout.addWidget(handLabelLayout, alignment=Qt.AlignmentFlag.AlignCenter)
             
         topCardsLayout = QHBoxLayout()
@@ -722,7 +741,7 @@ class GameView(QWidget):
         self.layout.addLayout(layout, *position)
         return handLayout, handLabelLayout, topCardsLayout, bottomCardsLayout
     
-    def initPlayerAreaBot(self, label_text, position):
+    def initPlayerAreaBot(self, labelText, position):
         """
         Helper function to initialize a player area (hand, top cards, bottom cards).
         """
@@ -734,7 +753,7 @@ class GameView(QWidget):
         topCardsLayout = QHBoxLayout()
         layout.addLayout(topCardsLayout)
         
-        handLabelLayout = QLabel(label_text)
+        handLabelLayout = QLabel(labelText)
         layout.addWidget(handLabelLayout, alignment=Qt.AlignmentFlag.AlignCenter)
         
         handLayout = QHBoxLayout()
@@ -759,7 +778,7 @@ class GameView(QWidget):
         self.layout.addLayout(layout, *position)
         return handLayout, handLabelLayout, topCardsLayout, bottomCardsLayout
 
-    def initPlayerAreaLeft(self, label_text, position):
+    def initPlayerAreaLeft(self, labelText, position):
         """
         Helper function to initialize a player area (hand, top cards, bottom cards).
         """
@@ -768,7 +787,7 @@ class GameView(QWidget):
         handLayout = QVBoxLayout()
         layout.addLayout(handLayout)
         
-        handLabelLayout = QLabel(label_text)
+        handLabelLayout = QLabel(labelText)
         font = self.currentPlayerLabel.font()
         font.setPointSize(9) 
         handLabelLayout.setFont(font)
@@ -813,7 +832,7 @@ class GameView(QWidget):
         self.layout.addLayout(layout, *position)
         return handLayout, handLabelLayout, topCardsLayout, bottomCardsLayout
     
-    def initPlayerAreaRight(self, label_text, position):
+    def initPlayerAreaRight(self, labelText, position):
         """
         Helper function to initialize a player area (hand, top cards, bottom cards).
         """
@@ -825,7 +844,7 @@ class GameView(QWidget):
         topCardsLayout = QVBoxLayout()
         layout.addLayout(topCardsLayout)
         
-        handLabelLayout = QLabel(label_text)
+        handLabelLayout = QLabel(labelText)
         font = self.currentPlayerLabel.font()
         font.setPointSize(9) 
         handLabelLayout.setFont(font)
@@ -871,7 +890,7 @@ class GameView(QWidget):
         """
         Initializes the layout for a two-player game.
         """
-        if self.player_index == 1:
+        if self.playerIndex == 1:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
             self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 2's Hand", (1, 5))
         else:
@@ -882,15 +901,15 @@ class GameView(QWidget):
         """
         Initializes the layout for a three-player game.
         """
-        if self.player_index == 1:
+        if self.playerIndex == 1:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
             self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 2's Hand", (6, 0))
             self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 3's Hand", (1, 5))
-        elif self.player_index == 2:
+        elif self.playerIndex == 2:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
             self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 3's Hand", (6, 0))
             self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaBot("Player 1's Hand", (1, 5))
-        elif self.player_index == 3:
+        elif self.playerIndex == 3:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
             self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 1's Hand", (6, 0))
             self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 2's Hand", (1, 5))
@@ -899,22 +918,22 @@ class GameView(QWidget):
         """
         Initializes the layout for a four-player game.
         """
-        if self.player_index == 1:
+        if self.playerIndex == 1:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
             self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 2's Hand", (5, 0))
             self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 3's Hand", (0, 5))
             self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight("Player 4's Hand", (5, 10))
-        elif self.player_index == 2:
+        elif self.playerIndex == 2:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
             self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 3's Hand", (5, 0))
             self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 4's Hand", (0, 5))
             self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight("Player 1's Hand", (5, 10))
-        elif self.player_index == 3:
+        elif self.playerIndex == 3:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
             self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 4's Hand", (5, 0))
             self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 1's Hand", (0, 5))
             self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight("Player 2's Hand", (5, 10))
-        elif self.player_index == 4:
+        elif self.playerIndex == 4:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
             self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 1's Hand", (5, 0))
             self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 2's Hand", (0, 5))
@@ -945,9 +964,21 @@ class GameView(QWidget):
 
                 # Add mouse press event for card selection
                 button.mousePressEvent = lambda event, idx=idx, btn=button: self.controller.prepareCardPlacement(idx, btn)
-
             self.playerHand.addWidget(button)
-
+            
+    def updatePile(self):
+        """
+        Updates the pile display with the top card.
+        """
+        if self.controller.pile:
+            topCard = self.controller.pile[-1]  # Get the top card from the pile
+            pixmap = QPixmap(fr"_internal\palaceData\cards\{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(
+                CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+            self.pileLabel.setPixmap(pixmap)
+        else:
+            self.pileLabel.setText("Pile: Empty")
+    
     def updateTopCards(self):
         """
         Update the current player's top cards display (face up).
@@ -994,58 +1025,58 @@ class GameView(QWidget):
             self.playerBottom.addWidget(button)
 
     def updateOtherPlayerCards(self, playerIndex, handCards, topCards, bottomCards):
-        # Mapping based on self.player_index
-        layout_map = {
+        # Mapping based on self.playerIndex
+        layoutMap = {
             'hand': {},
             'top': {},
             'bottom': {}
         }
 
-        if self.num_players == 2:
-            if self.player_index == 1:
-                layout_map['hand'] = {2: self.topHand}
-                layout_map['top'] = {2: self.topTop}
-                layout_map['bottom'] = {2: self.topBottom}
-            elif self.player_index == 2:
-                layout_map['hand'] = {1: self.topHand}
-                layout_map['top'] = {1: self.topTop}
-                layout_map['bottom'] = {1: self.topBottom}
-        elif self.num_players == 3:
-            if self.player_index == 1:
-                layout_map['hand'] = {2: self.leftHand, 3: self.topHand}
-                layout_map['top'] = {2: self.leftTop, 3: self.topTop}
-                layout_map['bottom'] = {2: self.leftBottom, 3: self.topBottom}
-            elif self.player_index == 2:
-                layout_map['hand'] = {3: self.leftHand, 1: self.topHand}
-                layout_map['top'] = {3: self.leftTop, 1: self.topTop}
-                layout_map['bottom'] = {3: self.leftBottom, 1: self.topBottom}
-            elif self.player_index == 3:
-                layout_map['hand'] = {1: self.leftHand, 2: self.topHand}
-                layout_map['top'] = {1: self.leftTop, 2: self.topTop}
-                layout_map['bottom'] = {1: self.leftBottom, 2: self.topBottom}
-        elif self.num_players == 4:
-            if self.player_index == 1:
-                layout_map['hand'] = {2: self.leftHand, 3: self.topHand, 4: self.rightHand}
-                layout_map['top'] = {2: self.leftTop, 3: self.topTop, 4: self.rightTop}
-                layout_map['bottom'] = {2: self.leftBottom, 3: self.topBottom, 4: self.rightBottom}
-            elif self.player_index == 2:
-                layout_map['hand'] = {3: self.leftHand, 4: self.topHand, 1: self.rightHand}
-                layout_map['top'] = {3: self.leftTop, 4: self.topTop, 1: self.rightTop}
-                layout_map['bottom'] = {3: self.leftBottom, 4: self.topBottom, 1: self.rightBottom}
-            elif self.player_index == 3:
-                layout_map['hand'] = {4: self.leftHand, 1: self.topHand, 2: self.rightHand}
-                layout_map['top'] = {4: self.leftTop, 1: self.topTop, 2: self.rightTop}
-                layout_map['bottom'] = {4: self.leftBottom, 1: self.topBottom, 2: self.rightBottom}
-            elif self.player_index == 4:
-                layout_map['hand'] = {1: self.leftHand, 2: self.topHand, 3: self.rightHand}
-                layout_map['top'] = {1: self.leftTop, 2: self.topTop, 3: self.rightTop}
-                layout_map['bottom'] = {1: self.leftBottom, 2: self.topBottom, 3: self.rightBottom}
+        if self.numPlayers == 2:
+            if self.playerIndex == 1:
+                layoutMap['hand'] = {2: self.topHand}
+                layoutMap['top'] = {2: self.topTop}
+                layoutMap['bottom'] = {2: self.topBottom}
+            elif self.playerIndex == 2:
+                layoutMap['hand'] = {1: self.topHand}
+                layoutMap['top'] = {1: self.topTop}
+                layoutMap['bottom'] = {1: self.topBottom}
+        elif self.numPlayers == 3:
+            if self.playerIndex == 1:
+                layoutMap['hand'] = {2: self.leftHand, 3: self.topHand}
+                layoutMap['top'] = {2: self.leftTop, 3: self.topTop}
+                layoutMap['bottom'] = {2: self.leftBottom, 3: self.topBottom}
+            elif self.playerIndex == 2:
+                layoutMap['hand'] = {3: self.leftHand, 1: self.topHand}
+                layoutMap['top'] = {3: self.leftTop, 1: self.topTop}
+                layoutMap['bottom'] = {3: self.leftBottom, 1: self.topBottom}
+            elif self.playerIndex == 3:
+                layoutMap['hand'] = {1: self.leftHand, 2: self.topHand}
+                layoutMap['top'] = {1: self.leftTop, 2: self.topTop}
+                layoutMap['bottom'] = {1: self.leftBottom, 2: self.topBottom}
+        elif self.numPlayers == 4:
+            if self.playerIndex == 1:
+                layoutMap['hand'] = {2: self.leftHand, 3: self.topHand, 4: self.rightHand}
+                layoutMap['top'] = {2: self.leftTop, 3: self.topTop, 4: self.rightTop}
+                layoutMap['bottom'] = {2: self.leftBottom, 3: self.topBottom, 4: self.rightBottom}
+            elif self.playerIndex == 2:
+                layoutMap['hand'] = {3: self.leftHand, 4: self.topHand, 1: self.rightHand}
+                layoutMap['top'] = {3: self.leftTop, 4: self.topTop, 1: self.rightTop}
+                layoutMap['bottom'] = {3: self.leftBottom, 4: self.topBottom, 1: self.rightBottom}
+            elif self.playerIndex == 3:
+                layoutMap['hand'] = {4: self.leftHand, 1: self.topHand, 2: self.rightHand}
+                layoutMap['top'] = {4: self.leftTop, 1: self.topTop, 2: self.rightTop}
+                layoutMap['bottom'] = {4: self.leftBottom, 1: self.topBottom, 2: self.rightBottom}
+            elif self.playerIndex == 4:
+                layoutMap['hand'] = {1: self.leftHand, 2: self.topHand, 3: self.rightHand}
+                layoutMap['top'] = {1: self.leftTop, 2: self.topTop, 3: self.rightTop}
+                layoutMap['bottom'] = {1: self.leftBottom, 2: self.topBottom, 3: self.rightBottom}
 
         # Update layouts for hand, top, and bottom cards
         for cardType, cards, layout in zip(
             ['hand', 'top', 'bottom'],
             [handCards, topCards, bottomCards],
-            [layout_map['hand'].get(playerIndex), layout_map['top'].get(playerIndex), layout_map['bottom'].get(playerIndex)]
+            [layoutMap['hand'].get(playerIndex), layoutMap['top'].get(playerIndex), layoutMap['bottom'].get(playerIndex)]
         ):
             if not layout:
                 continue  # Invalid playerIndex for the current view
@@ -1061,33 +1092,33 @@ class GameView(QWidget):
             for card in cards:
                 button = QLabel()
                 rotate = False
-                rotated_dimensions = (BUTTON_HEIGHT, BUTTON_WIDTH)
-                standard_dimensions = (BUTTON_WIDTH, BUTTON_HEIGHT)
-                pixmap_dimensions = (CARD_WIDTH, CARD_HEIGHT)
+                rotatedDimensions = (BUTTON_HEIGHT, BUTTON_WIDTH)
+                standardDimensions = (BUTTON_WIDTH, BUTTON_HEIGHT)
+                pixmapDimensions = (CARD_WIDTH, CARD_HEIGHT)
                 
                 # Determine layout properties
                 if layout in [getattr(self, 'leftHand', None), getattr(self, 'rightHand', None),
                             getattr(self, 'leftTop', None), getattr(self, 'rightTop', None),
                             getattr(self, 'leftBottom', None), getattr(self, 'rightBottom', None)]:
-                    button.setFixedSize(*rotated_dimensions)
+                    button.setFixedSize(*rotatedDimensions)
                     rotate = True
                 else:
-                    button.setFixedSize(*standard_dimensions)
+                    button.setFixedSize(*standardDimensions)
 
                 # Load the card image
                 if cardType == 'bottom':  # Bottom cards (face down)
                     pixmap = QPixmap(fr"_internal\palaceData\cards\back.png").scaled(
-                        *pixmap_dimensions, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                        *pixmapDimensions, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
                     )
                 else:  # Top and hand cards (face up)
                     pixmap = QPixmap(fr"_internal\palaceData\cards\{card[0].lower()}_of_{card[1].lower()}.png").scaled(
-                        *pixmap_dimensions, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                        *pixmapDimensions, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
                     )
 
                 # Apply rotation if necessary
                 if rotate:
-                    rotation_angle = 90 if layout in [getattr(self, 'leftHand', None), getattr(self, 'leftTop', None), getattr(self, 'leftBottom', None)] else -90
-                    transform = QTransform().rotate(rotation_angle)
+                    rotationAngle = 90 if layout in [getattr(self, 'leftHand', None), getattr(self, 'leftTop', None), getattr(self, 'leftBottom', None)] else -90
+                    transform = QTransform().rotate(rotationAngle)
                     pixmap = pixmap.transformed(transform, Qt.TransformationMode.SmoothTransformation).scaled(CARD_HEIGHT, CARD_WIDTH, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
 
                 # Set pixmap and alignment
@@ -1101,6 +1132,48 @@ class GameView(QWidget):
         """
         self.confirmButton.setEnabled(selectedCount == 3)
     
+    def updatePlaceButton(self, isEnabled, text):
+        self.placeButton.setEnabled(isEnabled)
+        self.placeButton.setText(text)
+    
+    def updatePile(self, pile):
+        """
+        Update the pile view with the top card.
+        """
+        if pile:
+            topCard = pile[-1]
+            pixmap = QPixmap(fr"_internal\palaceData\cards\{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(
+                CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+            self.pileLabel.setPixmap(pixmap)
+        else:
+            self.pileLabel.setText("Pile: Empty")
+    
+    def updateCurrentPlayer(self, currentPlayer):
+        """
+        Update the UI for the current player.
+        """
+        self.currentPlayerLabel.setText(f"Current Player: {currentPlayer}")
+        isCurrentPlayer = currentPlayer == self.playerIndex
+        self.setPlayerHandEnabled(isCurrentPlayer)
+        self.placeButton.setEnabled(False)
+        if isCurrentPlayer:
+            self.placeButton.setText("Select A Card")
+        else:
+            self.placeButton.setText(f"Player {currentPlayer}'s Turn...")
+
+    
+    def updateCardState(self, cardIndex, isEnabled):
+        widget = self.playerHand.itemAt(cardIndex).widget()
+        if widget:
+            widget.setEnabled(isEnabled)
+    
+    def setPlayerHandEnabled(self, enabled):
+        for i in range(self.playerHand.count()):
+            widget = self.playerHand.itemAt(i).widget()
+            if widget:
+                widget.setEnabled(enabled)
+    
     def startMainView(self):
         """
         Transition to the main game phase by displaying the center console.
@@ -1109,32 +1182,53 @@ class GameView(QWidget):
         self.confirmButton.hide()
         self.placeButton.show()
         self.deckLabel.show()
+        self.deckLabel.setText(f"Draw Deck:\n\n{len(self.controller.deck)} cards remaining")
         self.pickUpPileButton.show()
         self.pileLabel.setText("Pile: Empty")
-        self.currentPlayerLabel.setText("Current Player: ")
+        self.pileLabel.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
+        self.currentPlayerLabel.setText(f"Current Player: {self.controller.currentPlayer}")
+        self.currentPlayerLabel.show()
+        
+        if self.controller.currentPlayer == self.controller.playerIndex:
+            self.setPlayerHandEnabled(True)
+        else:
+            self.setPlayerHandEnabled(False)
             
 class GameController(QObject):
-    indexAssigned = Signal(int)
     selectedCardsChanged = Signal(int)
     updatePlayerHandSignal = Signal(list)
     updateTopCardsSignal = Signal(list)
     updateBottomCardsSignal = Signal(list)
     updateOtherPlayerCardsSignal = Signal(int, list, list, list)
-    startMainViewSignal = Signal()         # Notify when the main game starts
-    confirmTopCardsSignal = Signal(int)
+    startMainViewSignal = Signal()
+    placeButtonStateChanged = Signal(bool, str)   
+    updateCardStateSignal = Signal(int, bool)
+    currentPlayerChangedSignal = Signal(int)
+    updatePileSignal = Signal(list)
 
     topCardSelectionPhase = True
 
-    def __init__(self, player_index, handCards, bottomCards, numPlayers, broadcastUpdate):
+    def __init__(self, deck, playerIndex, handCards, bottomCards, numPlayers, broadcastUpdate):
         super().__init__()
-        self.player_index = player_index
+        self.deck = deck
+        self.playerIndex = playerIndex
         self.numPlayers = numPlayers
-        self.selectedCards = []  # Track selected cards
-        self.topCards = []       # Store top cards
-        self.handCards = handCards  # Store hand cards
-        self.bottomCards = bottomCards  # Store bottom cards (face down)
+        self.selectedCards = []  
+        self.topCards = []
+        self.pile = []
+        self.handCards = handCards  
+        self.bottomCards = bottomCards 
         self.broadcastUpdate = broadcastUpdate
         self.topCardConfirms = 0
+        self.currentPlayer = None
+        
+        self.allPlayerCards = {
+            self.playerIndex: {
+                'handCards': self.handCards,
+                'topCards': self.topCards,
+                'bottomCards': self.bottomCards,
+            }
+        }
 
     def startGame(self):
         self.updatePlayerHandSignal.emit(self.handCards)
@@ -1146,17 +1240,80 @@ class GameController(QObject):
         card = self.handCards[cardIndex]
 
         if self.topCardSelectionPhase:
-            # Limit to 3 selected cards during top card selection phase
             if (cardIndex, card) in self.selectedCards:
+                # Deselect the card
                 self.selectedCards.remove((cardIndex, card))
                 cardLabel.setStyleSheet("border: 2px solid transparent; background-color: transparent;")
             elif len(self.selectedCards) < 3:
+                # Select the card if fewer than 3 cards are selected
                 self.selectedCards.append((cardIndex, card))
                 cardLabel.setStyleSheet("border: 2px solid blue; background-color: transparent;")
 
-            # Enable the confirm button if exactly 3 cards are selected
+            # Emit signal to update the confirm button state
             self.selectedCardsChanged.emit(len(self.selectedCards))
+        else:
+            if (card, cardLabel) in self.selectedCards:
+                # Deselect the card
+                self.selectedCards.remove((card, cardLabel))
+                cardLabel.setStyleSheet("border: 0px solid black; background-color: transparent;")
+            else:
+                # Select the card
+                self.selectedCards.append((card, cardLabel))
+                cardLabel.setStyleSheet("border: 2px solid blue; background-color: transparent;")
 
+            selectedCardRank = card[0]
+
+            # Enable or disable other cards based on the selected card's rank
+            for i, handCard in enumerate(self.handCards):
+                isEnabled = not self.selectedCards or handCard[0] == selectedCardRank
+                self.updateCardStateSignal.emit(i, isEnabled)
+
+            # Emit signal to update the place button state
+            if self.selectedCards:
+                self.placeButtonStateChanged.emit(True, "Place")
+            else:
+                self.placeButtonStateChanged.emit(False, "Select A Card")
+
+    def placeCard(self):
+        """
+        Places the selected cards onto the pile and handles the game loop logic.
+        """
+        if not self.selectedCards:
+            print("No cards selected to place.")
+            return
+
+        # Add selected cards to the pile
+        for card, label in self.selectedCards:
+            self.pile.append(card)
+
+        # Clear selected cards and update hand
+        self.selectedCards.clear()
+        self.handCards = [card for card in self.handCards if card not in self.pile]
+        self.updatePlayerHandSignal.emit(self.handCards)
+
+        # Update the pile view
+        self.updatePileSignal.emit(self.pile)
+
+        # Draw a card if hand has fewer than 3 cards
+        if len(self.handCards) < 3 and self.deck:
+            newCard = self.deck.pop(0)
+            self.handCards.append(newCard)
+            self.updatePlayerHandSignal.emit(self.handCards)
+            
+        self.broadcastUpdate('updateDeck', {self.deck})
+
+        # Rotate the turn to the next player
+        self.rotateTurn()
+    
+    def rotateTurn(self):
+        """
+        Handle turn rotation logic based on the number of players.
+        """
+        self.currentPlayer = (self.currentPlayer % self.numPlayers) + 1
+        self.currentPlayerChangedSignal.emit(self.currentPlayer)
+        self.broadcastUpdate('updateCurrentPlayer', {'currentPlayer': self.currentPlayer})
+        print(self.currentPlayer)
+    
     def confirmTopCards(self):
         # Move selected cards to top cards
         for index, card in self.selectedCards:
@@ -1173,14 +1330,19 @@ class GameController(QObject):
 
         # Notify the host about confirmation
         self.topCardConfirms += 1
-        self.broadcastUpdate('confirmedTopCards', {})
         self.broadcastCards()
-        self.checkAllPlayersConfirmed()
+        self.broadcastUpdate('confirmedTopCards', {})
+        if self.playerIndex == 1:
+            self.checkAllPlayersConfirmed()
     
-    def checkAllPlayersConfirmed(self):
+    def checkAllPlayersConfirmed(self):        
         if self.topCardConfirms == self.numPlayers:
-            self.startMainGame()
-            self.broadcastUpdate('startMainGame', {})
+            if self.playerIndex == 1:
+                highestPlayer, rankTotals = self.calculateRankTotals()
+                print(f"Rank totals for top cards: {rankTotals}")
+                print(f"Player {highestPlayer} has the highest rank total.")
+                self.startMainGame(highestPlayer)
+            self.broadcastUpdate('startMainGame', {"playerIndex": highestPlayer})
     
     def drawCard(self, newCard):
         """
@@ -1195,25 +1357,52 @@ class GameController(QObject):
         Broadcast the current player's handCards to the host for relaying.
         """
         payload = {
-            'playerIndex': self.player_index,
+            'playerIndex': self.playerIndex,
             'handCards': self.handCards,
             'topCards': self.topCards,
             'bottomCards': self.bottomCards
         }
         self.broadcastUpdate('updateCards', payload)
+        self.allPlayerCards[self.playerIndex] = {
+            'handCards': self.handCards,
+            'topCards': self.topCards,
+            'bottomCards': self.bottomCards,
+        }
     
     def updateOtherPlayerHand(self, playerIndex, handCards, topCards, bottomCards):
         """
         Update the hand cards of another player.
         """
-        if playerIndex != self.player_index:  # Ensure it's not updating its own hand
+        self.allPlayerCards[playerIndex] = {
+            'handCards': handCards,
+            'topCards': topCards,
+            'bottomCards': bottomCards,
+        }
+        if playerIndex != self.playerIndex:  # Ensure it's not updating its own hand
             self.updateOtherPlayerCardsSignal.emit(playerIndex, handCards, topCards, bottomCards)
     
-    def startMainGame(self):
+    def calculateRankTotals(self):
         """
-        Transition to the main game phase.
+        Calculate the rank totals for each player's top cards and determine the player with the highest total.
         """
+        rankTotals = {}
+        for playerIndex, cards in self.allPlayerCards.items():
+            topCards = cards.get('topCards', [])
+            total = sum(VALUES[card[0]] for card in topCards)  # Calculate total rank values
+            rankTotals[playerIndex] = total
+
+        # Find the player with the highest total
+        highestPlayer = max(rankTotals, key=rankTotals.get)
+        return highestPlayer, rankTotals
+
+    def startMainGame(self, highestPlayer):
+        """
+        Transition to the main game phase, calculate rank totals, and identify the player with the highest rank.
+        """
+        self.currentPlayer = highestPlayer
+        # Notify all players about the rank totals and highest player
         self.startMainViewSignal.emit()
+        
     
 ### Main Application ###
 if __name__ == "__main__":
