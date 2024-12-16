@@ -3,6 +3,7 @@ import socket
 import threading
 import random
 import json
+import time
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,\
     QTextEdit, QGridLayout, QSpacerItem, QSizePolicy, QDialog)
@@ -268,6 +269,7 @@ class HostLobby(QWidget):
         self.nextIndex = 2  # Host is always Player 1
         self.numPlayers = None
         self.playAgainCount = 0
+        self.playerNicknames = {}
         self.gameOverDialog = None
         self.hostController = None
         self.initUI()
@@ -279,10 +281,14 @@ class HostLobby(QWidget):
         self.setWindowIcon(QIcon(r"palaceData\palaceIcon.ico"))
         self.setGeometry(700, 300, 400, 300)
         layout = QVBoxLayout()
-
+        
         self.infoLabel = QLabel("Hosting Lobby...\nWaiting for players to join.")
         layout.addWidget(self.infoLabel)
 
+        self.nicknameInput = QLineEdit()
+        self.nicknameInput.setPlaceholderText("Enter Nickname")
+        layout.addWidget(self.nicknameInput)
+        
         self.logText = QTextEdit()
         self.logText.setReadOnly(True)
         layout.addWidget(self.logText)
@@ -328,9 +334,8 @@ class HostLobby(QWidget):
                     # Notify the client of their player index
                     indexData = json.dumps({"action": "setIndex", "index": index}) + "\n"
                     clientSocket.send(indexData.encode())
-                    
-                    threading.Thread(target=self.handleClient, args=(clientSocket,), daemon=True).start()
                     self.updatePlayerCount()
+                    threading.Thread(target=self.handleClient, args=(clientSocket, addr), daemon=True).start()
                 else:
                     clientSocket.send(b"Lobby full.\n")
                     clientSocket.close()
@@ -338,21 +343,30 @@ class HostLobby(QWidget):
                 self.logText.append(f"Error accepting connections: {e}")
                 break
 
-    def handleClient(self, clientSocket):
+    def handleClient(self, clientSocket, addr):
         index = self.clients[clientSocket]
         buffer = ""
         try:
             while True:
                 message = clientSocket.recv(2048).decode()
                 if not message:
-                    break  # Client disconnected
+                    print(f"Player {index} disconnected unexpectedly: no message received.")
+                    break
                 buffer += message
                 while "\n" in buffer:
                     json_message, buffer = buffer.split("\n", 1)  # Split by delimiter
                     try:
                         print(f"received from server: {json_message}")
                         data = json.loads(json_message)  # Parse JSON
-                        if data['action'] == 'updateCards':
+                        if data['action'] == 'join':
+                            nickname = data.get('nickname', f"Player {index}")
+                            if nickname != "":
+                                self.logText.append(f"Player {index} joined with nickname: {nickname}")
+                                self.broadcastToClients('updateLog', {'log': f"Player {index} connected from {addr}.\nPlayer {index} joined with nickname: {nickname}"}, exclude=clientSocket)
+                                self.playerNicknames[str(index)] = nickname
+                            else:
+                                self.logText.append(f"Player {index} joined")
+                        elif data['action'] == 'updateCards':
                             playerIndex = data['playerIndex']
                             handCards = data['handCards']
                             topCards = data['topCards']
@@ -415,6 +429,12 @@ class HostLobby(QWidget):
             print(f"Player {index} disconnected: {e}")
         finally:
             self.clients.pop(clientSocket, None)
+            if self.playerNicknames.get(str(index)):
+                self.logText.append(f"Player {index}: {self.playerNicknames.get(str(index))} disconnected")
+                self.broadcastToClients('updateLog', {'log': f"Player {index}: {self.playerNicknames.get(str(index))} disconnected"})
+            else:
+                self.logText.append(f"Player {index} disconnected")
+                self.broadcastToClients('updateLog', {'log': f"Player {index} disconnected"})
             self.nextIndex -= 1
             self.reassignIndices()
             self.updatePlayerCount()
@@ -473,7 +493,9 @@ class HostLobby(QWidget):
                     self.logText.append(f"Error broadcasting to client: {e}")
         
     def startGame(self):
-        suits = ['hearts', 'diamonds']
+        if self.nicknameInput.text() != "":
+            self.playerNicknames[1] = self.nicknameInput.text()
+        suits = ['hearts', 'diamonds', 'clubs', 'spades']
         self.deck = [(rank, suit, False, False) for rank in RANKS for suit in suits]
         random.shuffle(self.deck)
 
@@ -503,7 +525,8 @@ class HostLobby(QWidget):
             'action': 'deckSync',
             'deck': self.deck,
             'players': playerData,
-            'numPlayers': self.numPlayers
+            'numPlayers': self.numPlayers,
+            'nicknames': self.playerNicknames
         }
         payload = json.dumps(data) + "\n"
         for client in self.clients.keys():
@@ -527,7 +550,8 @@ class HostLobby(QWidget):
             self.hostCards,
             self.bottomCards,
             self.numPlayers,
-            self.broadcastToClients
+            self.broadcastToClients,
+            self.playerNicknames
         )
         self.hostGameView = GameView(self.hostController, self.geometry(), self.numPlayers, self.parent)
         self.hostGameView.show()
@@ -535,12 +559,15 @@ class HostLobby(QWidget):
     
     def shutdownServer(self):
         if self.server:
+            for client in list(self.clients.keys()):
+                try:
+                    client.close()
+                except Exception as e:
+                    self.logText.append(f"Error closing client connection: {e}")
+            self.clients.clear()
             self.server.close()
             self.server = None
             print("Server shut down.")
-            for client in list(self.clients.keys()):
-                client.close()
-            self.clients.clear()
 
     def goBack(self):
         self.shutdownServer()
@@ -564,6 +591,7 @@ class JoinLobby(QWidget):
         self.playerIndex = None  # Store the assigned player index
         self.numPlayers = None
         self.playAgainCount = 0
+        self.playerNicknames = {}
         self.initUI()
         centerDialog(self, parent, "JoinLobby")
 
@@ -631,6 +659,7 @@ class JoinLobby(QWidget):
                 'action': 'join',
                 'nickname': nickname
             }
+            time.sleep(1)
             self.client.send(json.dumps(initialData).encode() + b"\n")
 
             # Start listening to the server
@@ -644,17 +673,18 @@ class JoinLobby(QWidget):
             while True:
                 message = self.client.recv(2048).decode()
                 if not message:
+                    print("Server closed the connection.")
                     break
                 buffer += message  # Accumulate received data
                 while "\n" in buffer:
                     json_message, buffer = buffer.split("\n", 1)  # Split by delimiter
                     try:
-                        print(f"received from server: {json_message}")
                         data = json.loads(json_message)  # Deserialize JSON
-                        if data.get("action") == "setIndex":
-                            self.playerIndex = data.get("index")
+                        print(f"received from server: {data}")
+                        if data["action"] == "setIndex":
+                            self.playerIndex = data["index"]
                             self.logText.append(f"Assigned Player {self.playerIndex}")
-                        elif data.get("action") == "deckSync":
+                        elif data["action"] == "deckSync":
                             self.logText.append("Deck and player data received.")
                             self.processDeckSync(data)
                         elif data['action'] == 'updateCards':
@@ -668,6 +698,7 @@ class JoinLobby(QWidget):
                             self.gameView.updateCurrentPlayer(data['currentPlayer'])
                         elif data['action'] == 'startMainGame':
                             lowestPlayer = data['lowestPlayer']
+                            self.controller.clockwise = data['direction']
                             self.controller.startMainGame(lowestPlayer)
                         elif data['action'] == 'startNewGame':
                             self.controller.startNewGame()
@@ -695,13 +726,15 @@ class JoinLobby(QWidget):
                             self.goBack()
                             self.gameView.returnToMainMenu()
                             return
+                        elif data['action'] == 'updateLog':
+                            self.logText.append(data['log'])
                     except Exception as e:
-                        print(f"Disconnected from server: {e}")
+                        print(f"Error processing server message: {e}") 
         except Exception as e:
-            print(f"Disconnected from server: {e}")
+            print(f"Error in listenToServer: {e}")
         finally:
-            if self.client:
-                self.client.close()
+            print("Exiting listenToServer and closing client socket.")
+            self.leaveServer()
 
     def checkAllPlayersPlayAgain(self):        
         if self.gameView.playAgainCount == self.numPlayers:
@@ -721,6 +754,7 @@ class JoinLobby(QWidget):
             self.broadcastUpdate('confirmTopCards', payload)
     
     def processDeckSync(self, data):
+        self.playerNicknames = data.get("nicknames", {})
         self.deck = data.get("deck", [])
         players = data.get("players", {})
         playerKey = f'player{self.playerIndex}'
@@ -731,13 +765,21 @@ class JoinLobby(QWidget):
 
     def leaveServer(self):
         if self.client:
-            self.client.close()
-            self.client = None
+            try:
+                self.client.close()
+            except Exception as e:
+                self.logText.append(f"Error closing client connection: {e}")
+            finally:
+                self.client = None
         self.connected = False
         self.logText.append("Disconnected from server.")
         self.leaveButton.hide()
         self.joinButton.setDisabled(False)
-
+        
+    def closeEvent(self, event):
+        self.leaveServer()
+        super().closeEvent(event)
+    
     def goBack(self):
         if self.connected:
             self.leaveServer()
@@ -753,7 +795,8 @@ class JoinLobby(QWidget):
             self.handCards,
             self.bottomCards,
             self.numPlayers,
-            self.broadcastUpdate
+            self.broadcastUpdate,
+            self.playerNicknames
         )
         self.gameView = GameView(self.controller, self.geometry(), self.numPlayers, self.parent)
         self.gameView.show()
@@ -1087,10 +1130,10 @@ class GameView(QWidget):
         """
         if self.playerIndex == 1:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 2's Hand", (1, 5))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (1, 5))
         else:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 1's Hand", (1, 5))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (1, 5))
 
     def initThreePlayerLayout(self):
         """
@@ -1098,16 +1141,16 @@ class GameView(QWidget):
         """
         if self.playerIndex == 1:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 2's Hand", (6, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 3's Hand", (1, 5))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (6, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (1, 5))
         elif self.playerIndex == 2:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 3's Hand", (6, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaBot("Player 1's Hand", (1, 5))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (6, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaBot(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (1, 5))
         elif self.playerIndex == 3:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 1's Hand", (6, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 2's Hand", (1, 5))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (6, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (1, 5))
 
     def initFourPlayerLayout(self):
         """
@@ -1115,24 +1158,24 @@ class GameView(QWidget):
         """
         if self.playerIndex == 1:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 2's Hand", (5, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 3's Hand", (0, 5))
-            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight("Player 4's Hand", (5, 10))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (5, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (0, 5))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get('4', 'Player 4')}'s Hand", (5, 10))
         elif self.playerIndex == 2:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 3's Hand", (5, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 4's Hand", (0, 5))
-            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight("Player 1's Hand", (5, 10))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (5, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('4', 'Player 4')}'s Hand", (0, 5))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get(1, 'Player 1')}'s Hand", (5, 10))
         elif self.playerIndex == 3:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 4's Hand", (5, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 1's Hand", (0, 5))
-            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight("Player 2's Hand", (5, 10))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('4', 'Player 4')}'s Hand", (5, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (0, 5))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (5, 10))
         elif self.playerIndex == 4:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft("Player 1's Hand", (5, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop("Player 2's Hand", (0, 5))
-            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight("Player 3's Hand", (5, 10))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (5, 0))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (0, 5))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (5, 10))
     
     def updateHandCards(self, handCards):
         """
@@ -1380,7 +1423,8 @@ class GameView(QWidget):
         """
         Update the UI for the current player.
         """
-        self.currentPlayerLabel.setText(f"Current Player: {currentPlayer}")
+        currentPlayerNickname = self.controller.playerNicknames.get(f"{self.controller.currentPlayer}", f"Player {self.controller.currentPlayer}")
+        self.currentPlayerLabel.setText(f"Current Player: {currentPlayerNickname}'s Hand")
         isCurrentPlayer = currentPlayer == self.playerIndex
         self.setPlayerHandEnabled(isCurrentPlayer)
         if not isCurrentPlayer:
@@ -1393,7 +1437,7 @@ class GameView(QWidget):
             self.controller.updatePlayableCards()
             self.placeButton.setText("Select A Card")
         else:
-            self.placeButton.setText(f"Player {currentPlayer}'s Turn...")
+            self.placeButton.setText(f"Player {currentPlayerNickname}'s Turn...")
     
     def updateCardState(self, cardIndex, isEnabled):
         widget = self.playerHand.itemAt(cardIndex).widget()
@@ -1462,7 +1506,7 @@ class GameController(QObject):
     
     topCardSelectionPhase = True
 
-    def __init__(self, deck, playerIndex, handCards, bottomCards, numPlayers, broadcastUpdate):
+    def __init__(self, deck, playerIndex, handCards, bottomCards, numPlayers, broadcastUpdate, playerNicknames):
         super().__init__()
         self.deck = deck
         self.playerIndex = playerIndex
@@ -1470,8 +1514,10 @@ class GameController(QObject):
         self.selectedCards = []
         self.sevenSwitch = False
         self.pile = []
+        self.playerNicknames = playerNicknames
         self.handCards = handCards
         self.topCards = []
+        self.clockwise = None
         self.bottomCards = bottomCards 
         self.broadcastUpdate = broadcastUpdate
         self.topCardConfirms = 0
@@ -1665,7 +1711,10 @@ class GameController(QObject):
         """
         Handle turn rotation logic based on the number of players.
         """
-        self.currentPlayer = (self.currentPlayer % self.numPlayers) + 1
+        if self.clockwise:
+            self.currentPlayer = (self.currentPlayer % self.numPlayers) + 1
+        else:
+            self.currentPlayer = (self.currentPlayer - 2) % self.numPlayers + 1
         self.currentPlayerChangedSignal.emit(self.currentPlayer)
         self.broadcastUpdate('updateCurrentPlayer', {'currentPlayer': self.currentPlayer})
     
@@ -1692,12 +1741,20 @@ class GameController(QObject):
     
     def checkAllPlayersConfirmed(self):        
         if self.topCardConfirms == self.numPlayers:
-            lowestPlayer, rankTotals = self.calculateRankTotals()
+            lowestPlayer, secondLowestPlayer, rankTotals = self.calculateRankTotals()
             print(f"Rank totals for top cards: {rankTotals}")
             print(f"Player {lowestPlayer} has the lowest rank total.")
+            print(f"Player {secondLowestPlayer} has the lowest rank total.")
+            
+            if secondLowestPlayer:
+                if secondLowestPlayer > lowestPlayer:
+                    self.clockwise = True
+                else:
+                    self.clockwise = False
+            
             if self.playerIndex == 1:
                 self.startMainGame(lowestPlayer)
-            self.broadcastUpdate('startMainGame', {"lowestPlayer": lowestPlayer})
+            self.broadcastUpdate('startMainGame', {"lowestPlayer": lowestPlayer, "direction": self.clockwise})
     
     def checkGameState(self):
         if not self.handCards and not self.deck:
@@ -1715,8 +1772,9 @@ class GameController(QObject):
         self.updateBottomCardsSignal.emit(self.bottomCards)
     
     def gameOver(self):
-        self.broadcastUpdate('gameOver', {'winner': self.currentPlayer})
-        self.gameWonSignal.emit(self.currentPlayer)
+        currentPlayerNickname = self.playerNicknames.get(f"{self.currentPlayer}", f"Player {self.currentPlayer}")
+        self.broadcastUpdate('gameOver', {'winner': currentPlayerNickname})
+        self.gameWonSignal.emit(currentPlayerNickname)
     
     def disconnect(self):
         self.broadcastUpdate('playerDisconnected', {'playerIndex': self.playerIndex})
@@ -1752,16 +1810,26 @@ class GameController(QObject):
             self.updateOtherPlayerCardsSignal.emit(playerIndex, handCards, topCards, bottomCards)
     
     def calculateRankTotals(self):
-        """
-        Calculate the rank totals for each player's top cards and determine the player with the highest total.
-        """
         rankTotals = {}
         for playerIndex, cards in self.allPlayerCards.items():
             topCards = cards.get('topCards', [])
             total = sum(VALUES[card[0]] for card in topCards)  
             rankTotals[playerIndex] = total
+        
         lowestPlayer = min(rankTotals, key=rankTotals.get)
-        return lowestPlayer, rankTotals
+
+        # Find the second lowest adjacent player
+        if self.numPlayers > 2:
+            adjacentPlayers = [
+                ((lowestPlayer - 2) % self.numPlayers) + 1,  # Left adjacent player
+                (lowestPlayer % self.numPlayers) + 1         # Right adjacent player
+            ]
+            adjacentTotals = {p: rankTotals.get(p, float('inf')) for p in adjacentPlayers}
+            secondLowestPlayer = min(adjacentTotals, key=adjacentTotals.get)
+        else:
+            secondLowestPlayer = None  # No second lowest for 2 players
+
+        return lowestPlayer, secondLowestPlayer, rankTotals
 
     def startMainGame(self, lowestPlayer):
         """

@@ -1,4 +1,11 @@
-one = "1"
-two = "2"
+numPlayers = 4
+currentPlayer = 4
 
-print(one>two)
+clockwise = False
+
+if clockwise:
+    currentPlayer = (currentPlayer % numPlayers) + 1
+else:
+    currentPlayer = (currentPlayer - 2) % numPlayers + 1
+    
+print(currentPlayer)
