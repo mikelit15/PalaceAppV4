@@ -5,7 +5,7 @@ import random
 import json
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,\
-    QTextEdit, QGridLayout, QSpacerItem, QSizePolicy, QDialog)
+    QTextEdit, QGridLayout, QSpacerItem, QSizePolicy, QDialog, QMessageBox)
 from PySide6.QtGui import QPixmap, QIcon, QTransform, QPainter
 from PySide6.QtCore import Qt, QRect, QObject, Signal, QTimer, QMetaObject, Slot, Q_ARG
 import qdarktheme
@@ -274,7 +274,7 @@ class HostLobby(QWidget):
         self.initUI()
         centerDialog(self, parent, "HostLobby")
         self.startServer()
-
+        
     def initUI(self):
         self.setWindowTitle("Hosting Lobby")
         self.setWindowIcon(QIcon(r"palaceData\palaceIcon.ico"))
@@ -398,7 +398,6 @@ class HostLobby(QWidget):
                             self.playAgainCount = data['playAgainCount']
                             self.gameOverDialog.updateCounter(data['playAgainCount'])
                             self.broadcastToClients('updatePlayAgainCount', data, exclude=clientSocket)
-                            self.checkAllPlayersPlayAgain()
                         elif data['action'] == 'updateDeck':
                             self.hostController.deck = data['deck']
                             self.hostGameView.updateDeck(data['deck'])
@@ -416,15 +415,23 @@ class HostLobby(QWidget):
                         elif data['action'] == 'playerDisconnected':
                             if self.hostController.numPlayers == 2:
                                 self.broadcastToClients('gameClose', data, exclude=clientSocket)
-                                self.hostGameView.returnToMainMenu()
+                                self.returnToMainMenu()
                                 self.goBack()
                             elif self.hostController.numPlayers == 3:
                                 pass
                             elif self.hostController.numPlayers == 4:
                                 pass
                         elif data['action'] == 'leaveLobby':
-                            self.gameOverDialog.numPlayers -= 1
+                            del self.clients[clientSocket]
+                            try:
+                                clientSocket.close()  # Ensure the socket is properly closed
+                            except Exception as e:
+                                print(f"Error closing client socket: {e}")
                             self.numPlayers -= 1
+                            self.gameOverDialog.numPlayers = self.numPlayers
+                            if self.numPlayers == 1:
+                                QMetaObject.invokeMethod(self.gameOverDialog, "close", Qt.ConnectionType.QueuedConnection)
+                                QMetaObject.invokeMethod(self.hostGameView, "returnToMainMenu", Qt.ConnectionType.QueuedConnection)
                             self.gameOverDialog.updateCounter(self.playAgainCount)
                             self.broadcastToClients('updateNumPlayersLobby', {}, exclude=clientSocket)
                     except json.JSONDecodeError:
@@ -462,23 +469,46 @@ class HostLobby(QWidget):
         self.gameOverDialog = GameOverDialog(winner, parentCoords, self.numPlayers)
         self.gameOverDialog.playAgainSignal.connect(self.playAgain)
         self.gameOverDialog.mainMenuSignal.connect(self.returnToMainMenu)
-        self.gameOverDialog.exitSignal.connect(QApplication.instance().quit)
+        self.gameOverDialog.exitSignal.connect(self.quitGame)
         self.gameOverDialog.exec()
     
     def playAgain(self):
         self.playAgainCount += 1
         self.gameOverDialog.updateCounter(self.playAgainCount)
         self.broadcastToClients('updatePlayAgainCount', {'playAgainCount': self.playAgainCount})
-    
+        self.checkAllPlayersPlayAgain()
+        
     def returnToMainMenu(self):
-        self.hostGameView.returnToMainMenu()
+        self.broadcastToClients('gameClose', {})
+        QMetaObject.invokeMethod(self.hostGameView, "returnToMainMenu", Qt.ConnectionType.QueuedConnection)
+        self.goBack()
     
+    def quitGame(self):
+        self.broadcastToClients('gameClose', {})
+        QApplication.instance().quit
+        
     def checkAllPlayersPlayAgain(self):        
         if self.playAgainCount == self.numPlayers:
-            self.startGame()
+            try:
+                QMetaObject.invokeMethod(self.gameOverDialog, "close", Qt.ConnectionType.QueuedConnection)
+            except Exception:
+                pass
+            try:
+                QMetaObject.invokeMethod(self.hostGameView, "close", Qt.ConnectionType.QueuedConnection)
+            except Exception:
+                pass
+            QMetaObject.invokeMethod(self, "startGame", Qt.ConnectionType.QueuedConnection)
     
     def startNewGame(self):
-        self.startGame()
+        try:
+            QMetaObject.invokeMethod(self.gameOverDialog, "close", Qt.ConnectionType.QueuedConnection)
+        except Exception:
+            pass
+        try:
+            QMetaObject.invokeMethod(self.hostGameView, "close", Qt.ConnectionType.QueuedConnection)
+        except Exception:
+            pass
+        QMetaObject.invokeMethod(self, "startGame", Qt.ConnectionType.QueuedConnection)
     
     def reassignIndices(self):
         """
@@ -513,6 +543,7 @@ class HostLobby(QWidget):
                         Q_ARG(str, f"Error broadcasting to client: {e}"))
     
     def startGame(self):
+        self.playAgainCount = 0
         if self.nicknameInput.text() != "":
             self.playerNicknames[1] = self.nicknameInput.text()
         suits = ['hearts', 'diamonds']
@@ -573,6 +604,7 @@ class HostLobby(QWidget):
             self.broadcastToClients,
             self.playerNicknames
         )
+        self.hostController.gameOverSignal.connect(self.showGameOverDialog)
         self.hostGameView = GameView(self.hostController, self.geometry(), self.numPlayers, self.parent)
         self.hostGameView.show()
         self.hostController.startGame()
@@ -612,6 +644,7 @@ class JoinLobby(QWidget):
         self.playerIndex = None  # Store the assigned player index
         self.numPlayers = None
         self.playAgainCount = 0
+        self.gameView = None
         self.playerNicknames = {}
         self.initUI()
         centerDialog(self, parent, "JoinLobby")
@@ -735,7 +768,6 @@ class JoinLobby(QWidget):
                         elif data['action'] == 'updatePlayAgainCount':
                             self.playAgainCount = data['playAgainCount']
                             self.gameOverDialog.updateCounter(data['playAgainCount'])
-                            self.checkAllPlayersPlayAgain()
                         elif data['action'] == 'updateDeck':
                             self.controller.deck = data['deck']
                             self.gameView.updateDeck(data['deck'])
@@ -748,9 +780,11 @@ class JoinLobby(QWidget):
                             self.controller.sevenSwitch = data['sevenSwitch']
                         elif data['action'] == 'playerDisconnected':
                             self.broadcastUpdate('playerDisconnected', data)
+                            self.returnToMainMenu()
                             self.goBack()
-                            self.gameView.returnToMainMenu()
-                            return
+                        elif data['action'] == 'gameClose':
+                            QMetaObject.invokeMethod(self.gameOverDialog, "close", Qt.ConnectionType.QueuedConnection)
+                            QMetaObject.invokeMethod(self.gameView, "returnToMainMenu", Qt.ConnectionType.QueuedConnection)
                         elif data['action'] == 'updateNumPlayersLobby':
                             self.gameOverDialog.numPlayers -= 1
                             self.numPlayers -= 1
@@ -765,7 +799,7 @@ class JoinLobby(QWidget):
         finally:
             print("Exiting listenToServer and closing client socket.")
             self.leaveServer()
-
+    
     @Slot(int)
     def showGameOverDialog(self, winner):
         """
@@ -781,18 +815,23 @@ class JoinLobby(QWidget):
         self.gameOverDialog = GameOverDialog(winner, parentCoords, self.numPlayers)
         self.gameOverDialog.playAgainSignal.connect(self.playAgain)
         self.gameOverDialog.mainMenuSignal.connect(self.returnToMainMenu)
-        self.gameOverDialog.exitSignal.connect(QApplication.instance().quit)
+        self.gameOverDialog.exitSignal.connect(self.quitGame)
         self.gameOverDialog.exec()
     
     def playAgain(self):
         self.playAgainCount += 1
         self.gameOverDialog.updateCounter(self.playAgainCount)
         self.broadcastUpdate('updatePlayAgainCount', {'playAgainCount': self.playAgainCount})
-    
+        self.checkAllPlayersPlayAgain()
+        
     def returnToMainMenu(self):
         self.broadcastUpdate('leaveLobby', {})
-        self.leaveServer()
-        self.gameView.returnToMainMenu()
+        QMetaObject.invokeMethod(self.gameView, "close", Qt.ConnectionType.QueuedConnection)
+        self.goBack()
+        
+    def quitGame(self):
+        self.broadcastUpdate('leaveLobby', {})
+        QApplication.instance().quit
     
     def checkAllPlayersPlayAgain(self):        
         if self.playAgainCount == self.numPlayers:
@@ -812,6 +851,14 @@ class JoinLobby(QWidget):
             self.broadcastUpdate('confirmTopCards', payload)
     
     def processDeckSync(self, data):
+        try:
+            QMetaObject.invokeMethod(self.gameOverDialog, "close", Qt.ConnectionType.QueuedConnection)
+        except Exception:
+            pass
+        try:
+            QMetaObject.invokeMethod(self.gameView, "close", Qt.ConnectionType.QueuedConnection)
+        except Exception:
+            pass
         self.playerNicknames = data.get("nicknames", {})
         self.deck = data.get("deck", [])
         players = data.get("players", {})
@@ -847,6 +894,7 @@ class JoinLobby(QWidget):
         self.parent.show()
 
     def startGame(self, playerIndex):
+        self.playAgainCount = 0
         print(f"Starting game as Player {playerIndex}.")
         self.hide()
         self.controller = GameController(
@@ -1430,15 +1478,15 @@ class GameView(QWidget):
                         button.setFixedSize(*standardDimensions)
 
                     # Load the card image
-                    if card[3]:  # Bottom cards (face down)
-                        pixmap = QPixmap(fr"palaceData\cards\back.png").scaled(
-                            *pixmapDimensions, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-                        )
-                    else:  # Top and hand cards (face up)
+                    if cardType == 'top':  # Top and hand cards (face up)
                         pixmap = QPixmap(fr"palaceData\cards\{card[0].lower()}_of_{card[1].lower()}.png").scaled(
                             *pixmapDimensions, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
                         )
-
+                    else:  # Bottom cards (face down)
+                        pixmap = QPixmap(fr"palaceData\cards\back.png").scaled(
+                            *pixmapDimensions, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                        )
+                
                     # Apply rotation if necessary
                     if rotate:
                         rotationAngle = 90 if layout in [getattr(self, 'leftHand', None), getattr(self, 'leftTop', None), getattr(self, 'leftBottom', None)] else -90
@@ -1561,6 +1609,7 @@ class GameController(QObject):
     updatePileLabelSignal = Signal(str)
     updateDeckSignal = Signal(list)
     gameWonSignal = Signal(int)
+    gameOverSignal = Signal(int)
     playerDisconnectedSignal = Signal()
     
     topCardSelectionPhase = True
@@ -1777,9 +1826,6 @@ class GameController(QObject):
         self.currentPlayerChangedSignal.emit(self.currentPlayer)
         self.broadcastUpdate('updateCurrentPlayer', {'currentPlayer': self.currentPlayer})
     
-    def updatePlayCount(self, playCount):
-        self.broadcastUpdate('updatePlayAgainCount', {'playAgainCount': playCount})
-    
     def confirmTopCards(self):
         # Move selected cards to top cards
         for index, card in self.selectedCards:
@@ -1806,7 +1852,7 @@ class GameController(QObject):
             lowestPlayer, secondLowestPlayer, rankTotals = self.calculateRankTotals()
             print(f"Rank totals for top cards: {rankTotals}")
             print(f"Player {lowestPlayer} has the lowest rank total.")
-            print(f"Player {secondLowestPlayer} has the lowest rank total.")
+            print(f"Player {secondLowestPlayer} has the second lowest rank total.")
             
             if secondLowestPlayer:
                 if secondLowestPlayer > lowestPlayer:
@@ -1837,7 +1883,11 @@ class GameController(QObject):
     def gameOver(self):
         currentPlayerNickname = self.playerNicknames.get(f"{self.currentPlayer}", self.currentPlayer)
         self.gameWonSignal.emit(currentPlayerNickname)
-        self.broadcastUpdate('gameOver', {'winner': currentPlayerNickname})
+        if self.playerIndex == 1:
+            self.gameOverSignal.emit(currentPlayerNickname)
+            self.broadcastUpdate('gameEnd', {'winner': currentPlayerNickname})
+        else:
+            self.broadcastUpdate('gameOver', {'winner': currentPlayerNickname})
     
     def disconnect(self):
         self.broadcastUpdate('playerDisconnected', {'playerIndex': self.playerIndex})
