@@ -3,7 +3,6 @@ import socket
 import threading
 import random
 import json
-import time
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,\
     QTextEdit, QGridLayout, QSpacerItem, QSizePolicy, QDialog)
@@ -315,11 +314,13 @@ class HostLobby(QWidget):
             self.server.bind(("0.0.0.0", 12345))
             hostIP = socket.gethostbyname(socket.gethostname())
             self.server.listen(4)
-            self.logText.append(f"Server started on {hostIP}, port 12345.")
+            QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                         Q_ARG(str, f"Server started on {hostIP}, port 12345."))
             threading.Thread(target=self.acceptConnections, daemon=True).start()
         except OSError as e:
             if e.errno == 10048:
-                self.logText.append("Host server already running")
+                QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, "Host server already running"))
 
     def acceptConnections(self):
         while self.server:
@@ -329,8 +330,8 @@ class HostLobby(QWidget):
                     index = self.nextIndex
                     self.clients[clientSocket] = index
                     self.nextIndex += 1
-                    self.logText.append(f"Player {index} connected from {addr}.")
-                    
+                    QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                         Q_ARG(str, f"Player {index} connected from {addr}."))
                     # Notify the client of their player index
                     indexData = json.dumps({"action": "setIndex", "index": index}) + "\n"
                     clientSocket.send(indexData.encode())
@@ -340,7 +341,8 @@ class HostLobby(QWidget):
                     clientSocket.send(b"Lobby full.\n")
                     clientSocket.close()
             except Exception as e:
-                self.logText.append(f"Error accepting connections: {e}")
+                QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, f"Error accepting connections: {e}"))
                 break
 
     def handleClient(self, clientSocket, addr):
@@ -361,11 +363,13 @@ class HostLobby(QWidget):
                         if data['action'] == 'join':
                             nickname = data.get('nickname', f"Player {index}")
                             if nickname != "":
-                                self.logText.append(f"Player {index} joined with nickname: {nickname}")
+                                QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                                    Q_ARG(str, f"Player {index} joined with nickname: {nickname}"))
                                 self.broadcastToClients('updateLog', {'log': f"Player {index} connected from {addr}.\nPlayer {index} joined with nickname: {nickname}"}, exclude=clientSocket)
                                 self.playerNicknames[str(index)] = nickname
                             else:
-                                self.logText.append(f"Player {index} joined")
+                                QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                                    Q_ARG(str, f"Player {index} joined"))
                         elif data['action'] == 'updateCards':
                             playerIndex = data['playerIndex']
                             handCards = data['handCards']
@@ -420,7 +424,9 @@ class HostLobby(QWidget):
                                 self.broadcastToClients('gameClose', data, exclude=clientSocket)
                                 self.hostGameView.returnToMainMenu()
                                 self.goBack()
-                            elif self.hostController.numPlayers >= 3:
+                            elif self.hostController.numPlayers == 3:
+                                pass
+                            elif self.hostController.numPlayers == 4:
                                 pass
                     except json.JSONDecodeError:
                         print(f"Received invalid data from Player {index}: {message}")
@@ -430,10 +436,12 @@ class HostLobby(QWidget):
         finally:
             self.clients.pop(clientSocket, None)
             if self.playerNicknames.get(str(index)):
-                self.logText.append(f"Player {index}: {self.playerNicknames.get(str(index))} disconnected")
+                QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, f"Player {index}: {self.playerNicknames.get(str(index))} disconnected"))
                 self.broadcastToClients('updateLog', {'log': f"Player {index}: {self.playerNicknames.get(str(index))} disconnected"})
             else:
-                self.logText.append(f"Player {index} disconnected")
+                QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, f"Player {index} disconnected"))
                 self.broadcastToClients('updateLog', {'log': f"Player {index} disconnected"})
             self.nextIndex -= 1
             self.reassignIndices()
@@ -466,7 +474,8 @@ class HostLobby(QWidget):
         """
         Reassign indices after a player disconnects and notify all clients of the updated indices.
         """
-        self.logText.append("Reassigning player indices after disconnection.")
+        QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+            Q_ARG(str, "Reassigning player indices after disconnection."))
         newClients = {}
         newIndex = 2  # Start at 2 since host is Player 1
 
@@ -490,8 +499,9 @@ class HostLobby(QWidget):
                 try:
                     clientSocket.send(message.encode())
                 except Exception as e:
-                    self.logText.append(f"Error broadcasting to client: {e}")
-        
+                    QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                        Q_ARG(str, f"Error broadcasting to client: {e}"))
+    
     def startGame(self):
         if self.nicknameInput.text() != "":
             self.playerNicknames[1] = self.nicknameInput.text()
@@ -563,7 +573,8 @@ class HostLobby(QWidget):
                 try:
                     client.close()
                 except Exception as e:
-                    self.logText.append(f"Error closing client connection: {e}")
+                    QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                        Q_ARG(str, f"Error closing client connection: {e}"))
             self.clients.clear()
             self.server.close()
             self.server = None
@@ -649,9 +660,9 @@ class JoinLobby(QWidget):
         nickname = self.nicknameInput.text()
         try:
             self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            time.sleep(0.5)
             self.client.connect((hostIP, 12345))
-            self.logText.append("Connected to server.")
+            QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, "Connected to server."))
             self.connected = True
             self.joinButton.setDisabled(True)
             self.leaveButton.show()
@@ -665,7 +676,8 @@ class JoinLobby(QWidget):
             # Start listening to the server
             threading.Thread(target=self.listenToServer, daemon=True).start()
         except Exception as e:
-            self.logText.append(f"Failed to connect: {e}")
+            QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, f"Failed to connect: {e}"))
 
     def listenToServer(self):
         buffer = ""
@@ -683,9 +695,11 @@ class JoinLobby(QWidget):
                         print(f"received from server: {data}")
                         if data["action"] == "setIndex":
                             self.playerIndex = data["index"]
-                            self.logText.append(f"Assigned Player {self.playerIndex}")
+                            QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                                Q_ARG(str, f"Assigned Player {self.playerIndex}"))
                         elif data["action"] == "deckSync":
-                            self.logText.append("Deck and player data received.")
+                            QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                                Q_ARG(str, "Deck and player data received."))
                             self.processDeckSync(data)
                         elif data['action'] == 'updateCards':
                             playerIndex = data['playerIndex']
@@ -698,6 +712,7 @@ class JoinLobby(QWidget):
                             self.gameView.updateCurrentPlayer(data['currentPlayer'])
                         elif data['action'] == 'startMainGame':
                             lowestPlayer = data['lowestPlayer']
+                            self.controller.clockwise = data['direction']
                             self.controller.startMainGame(lowestPlayer)
                         elif data['action'] == 'startNewGame':
                             self.controller.startNewGame()
@@ -726,7 +741,8 @@ class JoinLobby(QWidget):
                             self.gameView.returnToMainMenu()
                             return
                         elif data['action'] == 'updateLog':
-                            self.logText.append(data['log'])
+                            QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                                Q_ARG(str, data['log']))
                     except Exception as e:
                         print(f"Error processing server message: {e}") 
         except Exception as e:
@@ -767,11 +783,13 @@ class JoinLobby(QWidget):
             try:
                 self.client.close()
             except Exception as e:
-                self.logText.append(f"Error closing client connection: {e}")
+                QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, f"Error closing client connection: {e}"))
             finally:
                 self.client = None
         self.connected = False
-        self.logText.append("Disconnected from server.")
+        QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
+            Q_ARG(str, "Disconnected from server."))
         self.leaveButton.hide()
         self.joinButton.setDisabled(False)
         
@@ -840,22 +858,19 @@ class GameView(QWidget):
         self.disconnectButton = QPushButton("Disconnect")
         self.disconnectButton.setFixedWidth(125)
         self.disconnectButton.clicked.connect(self.controller.disconnect)
-        self.layout.addWidget(self.disconnectButton, 0, 0)
+        if self.numPlayers == 2:
+            self.layout.addWidget(self.disconnectButton, 0, 1)
+        else:
+            self.layout.addWidget(self.disconnectButton, 1, 1)
         
-        self.spacerButton = QLabel()
-        self.spacerButton.setFixedWidth(125)
-        self.layout.addWidget(self.spacerButton, 0, 10)
+        self.spacerButtonTopBottom = QLabel()
+        self.spacerButtonTopBottom.setFixedWidth(125)
+        
+        self.spacerButtonLeftRight = QLabel()
+        self.spacerButtonLeftRight.setFixedHeight(125)
 
         # Center Console
         self.initCenterConsole()
-
-        # Dynamic Layout Adjustment
-        if self.numPlayers == 2:
-            self.initTwoPlayerLayout()
-        elif self.numPlayers == 3:
-            self.initThreePlayerLayout()
-        elif self.numPlayers == 4:
-            self.initFourPlayerLayout()
         
         buttonsTopContainerLayout = QVBoxLayout()
         buttonsLeftContainerLayout = QVBoxLayout()
@@ -871,11 +886,24 @@ class GameView(QWidget):
         self.placeButton.clicked.connect(self.controller.placeCard)
         self.placeButton.setVisible(False)
         
-        buttonsTopContainerLayout.addWidget(self.spacerButton, alignment=Qt.AlignmentFlag.AlignCenter)
+        buttonsTopContainerLayout.addWidget(self.spacerButtonTopBottom, alignment=Qt.AlignmentFlag.AlignCenter)
+        buttonsLeftContainerLayout.addWidget(self.spacerButtonLeftRight, alignment=Qt.AlignmentFlag.AlignCenter)
+        buttonsRightContainerLayout.addWidget(self.spacerButtonLeftRight, alignment=Qt.AlignmentFlag.AlignCenter)
         buttonsBottomContainerLayout.addWidget(self.confirmButton, alignment=Qt.AlignmentFlag.AlignCenter)
         buttonsBottomContainerLayout.addWidget(self.placeButton, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.layout.addLayout(buttonsTopContainerLayout, 0, 5, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.layout.addLayout(buttonsBottomContainerLayout, 12, 5, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(buttonsTopContainerLayout, 0, 6, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(buttonsBottomContainerLayout, 12, 6, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        # Dynamic Layout Adjustment
+        if self.numPlayers == 2:
+            self.initTwoPlayerLayout()
+        elif self.numPlayers == 3:
+            self.layout.addLayout(buttonsLeftContainerLayout, 6, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+            self.initThreePlayerLayout()
+        elif self.numPlayers == 4:
+            self.layout.addLayout(buttonsLeftContainerLayout, 6, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+            self.layout.addLayout(buttonsRightContainerLayout, 6, 12, alignment=Qt.AlignmentFlag.AlignCenter)
+            self.initFourPlayerLayout()
         
         self.setLayout(self.layout)
 
@@ -915,7 +943,7 @@ class GameView(QWidget):
         self.centerLayout.addWidget(QLabel(""))
         self.centerLayout.addWidget(QLabel(""))
 
-        self.layout.addLayout(self.centerLayout, 6, 5, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(self.centerLayout, 6, 6, alignment=Qt.AlignmentFlag.AlignCenter)
     
     def initPlayerAreaTop(self, labelText, position):
         """
@@ -1013,9 +1041,9 @@ class GameView(QWidget):
         playerHandContainer.setMaximumWidth(500)
         handLayout = QVBoxLayout(playerHandContainer)
         playerHandContainerLayout = QVBoxLayout()
-        playerHandContainerLayout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
+        playerHandContainerLayout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
         playerHandContainerLayout.addWidget(playerHandContainer, alignment=Qt.AlignmentFlag.AlignCenter)
-        playerHandContainerLayout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
+        playerHandContainerLayout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
         layout.addLayout(playerHandContainerLayout)
         
         handLabelLayout = QLabel(labelText)
@@ -1099,9 +1127,9 @@ class GameView(QWidget):
         playerHandContainer.setMaximumWidth(500)
         handLayout = QVBoxLayout(playerHandContainer)
         playerHandContainerLayout = QVBoxLayout()
-        playerHandContainerLayout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
+        playerHandContainerLayout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
         playerHandContainerLayout.addWidget(playerHandContainer, alignment=Qt.AlignmentFlag.AlignCenter)
-        playerHandContainerLayout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
+        playerHandContainerLayout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
         layout.addLayout(playerHandContainerLayout)
 
         for _ in range(3):  # Assume max 3 cards for each area
@@ -1128,53 +1156,53 @@ class GameView(QWidget):
         Initializes the layout for a two-player game.
         """
         if self.playerIndex == 1:
-            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (1, 5))
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (1, 6))
         else:
-            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (1, 5))
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (1, 6))
 
     def initThreePlayerLayout(self):
         """
         Initializes the layout for a three-player game.
         """
         if self.playerIndex == 1:
-            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (6, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (1, 5))
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (6, 1))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (1, 6))
         elif self.playerIndex == 2:
-            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (6, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaBot(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (1, 5))
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (6, 1))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaBot(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (1, 6))
         elif self.playerIndex == 3:
-            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (6, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (1, 5))
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (6, 1))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (1, 6))
 
     def initFourPlayerLayout(self):
         """
         Initializes the layout for a four-player game.
         """
         if self.playerIndex == 1:
-            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (5, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (0, 5))
-            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get('4', 'Player 4')}'s Hand", (5, 10))
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (6, 1))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (1, 6))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get('4', 'Player 4')}'s Hand", (6, 10))
         elif self.playerIndex == 2:
-            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (5, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('4', 'Player 4')}'s Hand", (0, 5))
-            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get(1, 'Player 1')}'s Hand", (5, 10))
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (6, 1))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('4', 'Player 4')}'s Hand", (1, 6))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get(1, 'Player 1')}'s Hand", (6, 10))
         elif self.playerIndex == 3:
-            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('4', 'Player 4')}'s Hand", (5, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (0, 5))
-            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (5, 10))
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('4', 'Player 4')}'s Hand", (6, 1))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (1, 6))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (6, 10))
         elif self.playerIndex == 4:
-            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (10, 5))
-            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (5, 0))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (0, 5))
-            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (5, 10))
+            self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
+            self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (6, 1))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (1, 6))
+            self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (6, 10))
     
     def updateHandCards(self, handCards):
         """
@@ -1469,7 +1497,7 @@ class GameView(QWidget):
     def gameOver(self, winner):
         self.placeButton.setDisabled(True)
         self.pickUpPileButton.setDisabled(True)
-        self.currentPlayerLabel.setText(F"Player {winner} is Winner!!!")
+        self.currentPlayerLabel.setText(f"Player {winner} is Winner!!!")
         parentCoords = self.geometry()
         self.gameOverDialog = GameOverDialog(winner, parentCoords, self.controller.numPlayers)
         self.gameOverDialog.playAgainSignal.connect(self.playAgain)
@@ -1753,7 +1781,7 @@ class GameController(QObject):
             
             if self.playerIndex == 1:
                 self.startMainGame(lowestPlayer)
-            self.broadcastUpdate('startMainGame', {"lowestPlayer": lowestPlayer})
+            self.broadcastUpdate('startMainGame', {"lowestPlayer": lowestPlayer, "direction": self.clockwise})
     
     def checkGameState(self):
         if not self.handCards and not self.deck:
