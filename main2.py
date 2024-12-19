@@ -243,12 +243,12 @@ class OnlineMenu(QWidget):
 
     def hostGame(self):
         self.hide()
-        self.hostLobby = HostLobby(self.parent)
+        self.hostLobby = HostLobby(self.parent, self)
         self.hostLobby.show()
 
     def joinGame(self):
         self.hide()
-        self.joinLobby = JoinLobby(self.parent)
+        self.joinLobby = JoinLobby(self.parent, self)
         self.joinLobby.show()
 
     def goBack(self):
@@ -259,9 +259,10 @@ class OnlineMenu(QWidget):
 class HostLobby(QWidget):
     updateOtherPlayerHandSignal = Signal(int, list, list, list)
     
-    def __init__(self, parent):
+    def __init__(self, mainMenu, onlineMenu):
         super().__init__()
-        self.parent = parent
+        self.parent = onlineMenu
+        self.mainMenu = mainMenu
         self.server = None
         self.hostGameView = None
         self.clients = {}  # Map client sockets to indices
@@ -272,7 +273,7 @@ class HostLobby(QWidget):
         self.gameOverDialog = None
         self.hostController = None
         self.initUI()
-        centerDialog(self, parent, "HostLobby")
+        centerDialog(self, self.parent, "HostLobby")
         self.startServer()
         
     def initUI(self):
@@ -413,14 +414,29 @@ class HostLobby(QWidget):
                             self.hostController.sevenSwitch = data['sevenSwitch']
                             self.broadcastToClients('sevenSwitch', data, exclude=clientSocket)
                         elif data['action'] == 'playerDisconnected':
+                            del self.clients[clientSocket]
+                            try:
+                                clientSocket.close()  # Ensure the socket is properly closed
+                            except Exception as e:
+                                print(f"Error closing client socket: {e}")
                             if self.hostController.numPlayers == 2:
-                                self.broadcastToClients('gameClose', data, exclude=clientSocket)
-                                self.returnToMainMenu()
-                                self.goBack()
+                                self.broadcastToClients('gameClose', {})
+                                QMetaObject.invokeMethod(self.hostGameView, "returnToMainMenu", Qt.ConnectionType.QueuedConnection)
+                                self.shutdownServer()
                             elif self.hostController.numPlayers == 3:
-                                pass
+                                self.numPlayers -= 1
+                                self.hostController.numPlayers = self.numPlayers
+                                allPlayers = [1, 2, 3, 4]
+                                remainingPlayers = [p for p in allPlayers if p != index]
+                                self.hostGameView.switchToTwoPlayerLayout(remainingPlayers)
+                                self.broadcastToClients('switchToTwoPlayerLayout', {'remainingPlayers': remainingPlayers})
                             elif self.hostController.numPlayers == 4:
-                                pass
+                                self.numPlayers -= 1
+                                self.hostController.numPlayers = self.numPlayers
+                                allPlayers = [1, 2, 3, 4]
+                                remainingPlayers = [p for p in allPlayers if p != index]
+                                self.hostGameView.switchToThreePlayerLayout(remainingPlayers)
+                                self.broadcastToClients('switchToThreePlayerLayout', {'remainingPlayers': remainingPlayers})
                         elif data['action'] == 'leaveLobby':
                             del self.clients[clientSocket]
                             try:
@@ -546,7 +562,7 @@ class HostLobby(QWidget):
         self.playAgainCount = 0
         if self.nicknameInput.text() != "":
             self.playerNicknames[1] = self.nicknameInput.text()
-        suits = ['hearts', 'diamonds']
+        suits = ['hearts', 'diamonds', 'clubs', 'spades']
         self.deck = [(rank, suit, False, False) for rank in RANKS for suit in suits]
         random.shuffle(self.deck)
 
@@ -605,7 +621,7 @@ class HostLobby(QWidget):
             self.playerNicknames
         )
         self.hostController.gameOverSignal.connect(self.showGameOverDialog)
-        self.hostGameView = GameView(self.hostController, self.geometry(), self.numPlayers, self.parent)
+        self.hostGameView = GameView(self.hostController, self.geometry(), self.numPlayers, self.mainMenu)
         self.hostGameView.show()
         self.hostController.startGame()
     
@@ -635,9 +651,10 @@ class HostLobby(QWidget):
 class JoinLobby(QWidget):
     startGameSignal = Signal(int)
     
-    def __init__(self, parent):
+    def __init__(self, mainMenu, onlineMenu):
         super().__init__()
-        self.parent = parent
+        self.parent = onlineMenu
+        self.mainMenu = mainMenu
         self.client = None
         self.controller = None
         self.connected = False  # Track connection status
@@ -647,7 +664,7 @@ class JoinLobby(QWidget):
         self.gameView = None
         self.playerNicknames = {}
         self.initUI()
-        centerDialog(self, parent, "JoinLobby")
+        centerDialog(self, self.parent, "JoinLobby")
 
         # Connect the startGameSignal to the startGame slot
         self.startGameSignal.connect(self.startGame)
@@ -779,15 +796,26 @@ class JoinLobby(QWidget):
                         elif data['action'] == 'sevenSwitch':
                             self.controller.sevenSwitch = data['sevenSwitch']
                         elif data['action'] == 'playerDisconnected':
-                            self.broadcastUpdate('playerDisconnected', data)
-                            self.returnToMainMenu()
-                            self.goBack()
-                        elif data['action'] == 'gameClose':
-                            QMetaObject.invokeMethod(self.gameOverDialog, "close", Qt.ConnectionType.QueuedConnection)
-                            QMetaObject.invokeMethod(self.gameView, "returnToMainMenu", Qt.ConnectionType.QueuedConnection)
-                        elif data['action'] == 'updateNumPlayersLobby':
-                            self.gameOverDialog.numPlayers -= 1
+                            if self.controller.numPlayers == 2:
+                                self.broadcastUpdate('playerDisconnected', {})
+                        elif data['action'] == 'switchToTwoPlayerLayout':
                             self.numPlayers -= 1
+                            self.controller.numPlayers = self.numPlayers
+                            self.gameView.switchToTwoPlayerLayout(data['remainingPlayers'])
+                        elif data['action'] == 'switchToThreePlayerLayout':
+                            self.numPlayers -= 1
+                            self.controller.numPlayers = self.numPlayers
+                            self.gameView.switchToThreePlayerLayout(data['remainingPlayers'])
+                        elif data['action'] == 'gameClose':
+                            try:
+                                QMetaObject.invokeMethod(self.gameOverDialog, "close", Qt.ConnectionType.QueuedConnection)
+                            except Exception:
+                                pass
+                            QMetaObject.invokeMethod(self.gameView, "returnToMainMenu", Qt.ConnectionType.QueuedConnection)
+                            self.leaveServer()
+                        elif data['action'] == 'updateNumPlayersLobby':
+                            self.numPlayers -= 1
+                            self.gameOverDialog.numPlayers = self.numPlayers
                             self.gameOverDialog.updateCounter(self.playAgainCount)
                         elif data['action'] == 'updateLog':
                             QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
@@ -878,8 +906,6 @@ class JoinLobby(QWidget):
             finally:
                 self.client = None
         self.connected = False
-        QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
-            Q_ARG(str, "Disconnected from server."))
         self.leaveButton.hide()
         self.joinButton.setDisabled(False)
         
@@ -906,12 +932,16 @@ class JoinLobby(QWidget):
             self.broadcastUpdate,
             self.playerNicknames
         )
-        self.gameView = GameView(self.controller, self.geometry(), self.numPlayers, self.parent)
+        self.gameView = GameView(self.controller, self.geometry(), self.numPlayers, self.mainMenu)
         self.gameView.show()
         self.controller.startGame()
 
 
 class GameView(QWidget):
+    
+    twoPlayerLayoutSignal = Signal()
+    threePlayerLayoutSignal = Signal()
+    
     def __init__(self, controller, parentCoords, numPlayers, mainMenu):
         super().__init__()
         self.controller = controller
@@ -938,6 +968,9 @@ class GameView(QWidget):
         self.controller.updateDeckSignal.connect(self.updateDeck)
         self.controller.playerDisconnectedSignal.connect(self.returnToMainMenu)
         self.controller.gameWonSignal.connect(self.gameOver)
+        
+        self.twoPlayerLayoutSignal.connect(self.initTwoPlayerLayout)
+        self.threePlayerLayoutSignal.connect(self.initThreePlayerLayout)
         
     def initUI(self):
         self.setWindowTitle(f'Palace Card Game - Player {self.playerIndex}')
@@ -1062,17 +1095,17 @@ class GameView(QWidget):
 
         for _ in range(3):  # Assume max 3 cards for each area
             handSpacer = QLabel()
-            handSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            handSpacer.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
             handSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             handLayout.addWidget(handSpacer)
 
             topSpacer = QLabel()
-            topSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            topSpacer.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
             topSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             topCardsLayout.addWidget(topSpacer)
 
             bottomSpacer = QLabel()
-            bottomSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            bottomSpacer.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
             bottomSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             bottomCardsLayout.addWidget(bottomSpacer)
 
@@ -1105,17 +1138,17 @@ class GameView(QWidget):
 
         for _ in range(3):  # Assume max 3 cards for each area
             handSpacer = QLabel()
-            handSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            handSpacer.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
             handSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             handLayout.addWidget(handSpacer)
 
             topSpacer = QLabel()
-            topSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            topSpacer.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
             topSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             topCardsLayout.addWidget(topSpacer)
 
             bottomSpacer = QLabel()
-            bottomSpacer.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+            bottomSpacer.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
             bottomSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             bottomCardsLayout.addWidget(bottomSpacer)
 
@@ -1129,7 +1162,7 @@ class GameView(QWidget):
         layout = QHBoxLayout()
         
         playerHandContainer = QWidget()
-        playerHandContainer.setMaximumWidth(500)
+        playerHandContainer.setMaximumHeight(250)
         handLayout = QVBoxLayout(playerHandContainer)
         playerHandContainerLayout = QVBoxLayout()
         playerHandContainerLayout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
@@ -1165,17 +1198,17 @@ class GameView(QWidget):
 
         for _ in range(3):  # Assume max 3 cards for each area
             handSpacer = QLabel()
-            handSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            handSpacer.setFixedSize(BUTTON_HEIGHT, BUTTON_WIDTH)
             handSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             handLayout.addWidget(handSpacer)
 
             topSpacer = QLabel()
-            topSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            topSpacer.setFixedSize(BUTTON_HEIGHT, BUTTON_WIDTH)
             topSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             topCardsLayout.addWidget(topSpacer)
 
             bottomSpacer = QLabel()
-            bottomSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            bottomSpacer.setFixedSize(BUTTON_HEIGHT, BUTTON_WIDTH)
             bottomSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             bottomCardsLayout.addWidget(bottomSpacer)
 
@@ -1215,7 +1248,7 @@ class GameView(QWidget):
         layout.addWidget(handLabelLayout, alignment=Qt.AlignmentFlag.AlignCenter)
         
         playerHandContainer = QWidget()
-        playerHandContainer.setMaximumWidth(500)
+        playerHandContainer.setMaximumHeight(250)
         handLayout = QVBoxLayout(playerHandContainer)
         playerHandContainerLayout = QVBoxLayout()
         playerHandContainerLayout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
@@ -1225,17 +1258,17 @@ class GameView(QWidget):
 
         for _ in range(3):  # Assume max 3 cards for each area
             handSpacer = QLabel()
-            handSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            handSpacer.setFixedSize(BUTTON_HEIGHT, BUTTON_WIDTH)
             handSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             handLayout.addWidget(handSpacer)
 
             topSpacer = QLabel()
-            topSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            topSpacer.setFixedSize(BUTTON_HEIGHT, BUTTON_WIDTH)
             topSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             topCardsLayout.addWidget(topSpacer)
 
             bottomSpacer = QLabel()
-            bottomSpacer.setFixedSize(CARD_HEIGHT, CARD_WIDTH)
+            bottomSpacer.setFixedSize(BUTTON_HEIGHT, BUTTON_WIDTH)
             bottomSpacer.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
             bottomCardsLayout.addWidget(bottomSpacer)
 
@@ -1246,6 +1279,12 @@ class GameView(QWidget):
         """
         Initializes the layout for a two-player game.
         """
+        if hasattr(self, 'topHand'):
+            self.clearPlayerLayout(self.topHand, self.topHandLabel, self.topTop, self.topBottom)
+        if hasattr(self, 'leftHand'):
+            self.clearPlayerLayout(self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom)
+        if hasattr(self, 'playerHand'):
+            self.clearPlayerLayout(self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom)
         if self.playerIndex == 1:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
             self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (1, 6))
@@ -1257,6 +1296,14 @@ class GameView(QWidget):
         """
         Initializes the layout for a three-player game.
         """
+        if hasattr(self, 'topHand'):
+            self.clearPlayerLayout(self.topHand, self.topHandLabel, self.topTop, self.topBottom)
+        if hasattr(self, 'leftHand'):
+            self.clearPlayerLayout(self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom)
+        if hasattr(self, 'rightHand'):
+            self.clearPlayerLayout(self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom)
+        if hasattr(self, 'playerHand'):
+            self.clearPlayerLayout(self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom)
         if self.playerIndex == 1:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
             self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (6, 1))
@@ -1294,6 +1341,219 @@ class GameView(QWidget):
             self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (6, 1))
             self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('2', 'Player 2')}'s Hand", (1, 6))
             self.rightHand, self.rightHandLabel, self.rightTop, self.rightBottom = self.initPlayerAreaRight(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (6, 10))
+    
+    def switchToTwoPlayerLayout(self, remainingPlayers):
+        # Clear existing layouts for the top, left, or right players
+        if self.controller.playerIndex == 1 and 2 in remainingPlayers:
+            self.numPlayers = 2
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 2
+            storedCards = self.controller.allPlayerCards.get(3, {}).get('handCards', []) + \
+                          self.controller.allPlayerCards.get(3, {}).get('topCards', []) + \
+                          self.controller.allPlayerCards.get(3, {}).get('bottomCards', [])
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(2, {}),
+            }
+        elif self.controller.playerIndex == 1 and 3 in remainingPlayers:
+            self.numPlayers = 2
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 3
+            storedCards = self.controller.allPlayerCards.get(2, {}).get('handCards', []) + \
+                          self.controller.allPlayerCards.get(2, {}).get('topCards', []) + \
+                          self.controller.allPlayerCards.get(2, {}).get('bottomCards', [])
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(3, {}),
+            }
+        elif self.controller.playerIndex == 2:
+            self.numPlayers = 2
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 2
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(2, {}),
+            }
+        elif self.controller.playerIndex == 3:
+            self.playerIndex = 2
+            self.controller.playerIndex = self.playerIndex
+            self.numPlayers = 2
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 2
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(3, {}),
+            }
+        
+        self.controller.currentPlayerChangedSignal.emit(self.controller.currentPlayer)
+        
+        # Reinitialize the layout for a 2-player game
+        if self.playerIndex == 1:
+            topPlayerCards = self.controller.allPlayerCards.get(2, {})
+        elif self.playerIndex == 2:
+            topPlayerCards = self.controller.allPlayerCards.get(1, {})
+        self.twoPlayerLayoutSignal.emit()
+        
+        if not self.controller.topCardSelectionPhase:
+            self.controller.updateBottomCardsSignal.emit(self.controller.bottomCards)
+        self.controller.updateTopCardsSignal.emit(self.controller.topCards)
+        self.controller.updatePlayerHandSignal.emit(self.controller.handCards)
+        if self.playerIndex == 1:
+            if self.controller.deck and storedCards:
+                random.shuffle(storedCards)
+                self.controller.deck.extend(storedCards)
+                self.controller.updateDeckSignal.emit(self.controller.deck)
+                self.controller.broadcastUpdate('updateDeck', {'deck': self.controller.deck})
+            self.controller.updateOtherPlayerCardsSignal.emit(2, topPlayerCards.get('handCards', []), topPlayerCards.get('topCards', []), topPlayerCards.get('bottomCards', []))
+        elif self.playerIndex == 2:
+            self.controller.updateOtherPlayerCardsSignal.emit(1, topPlayerCards.get('handCards', []), topPlayerCards.get('topCards', []), topPlayerCards.get('bottomCards', []))
+        
+        self.setWindowTitle(f'Palace Card Game - Player {self.playerIndex}')
+        
+    def switchToThreePlayerLayout(self, remainingPlayers):
+        # Clear existing layouts for the top, left, or right players
+        if self.controller.playerIndex == 1 and 2 in remainingPlayers and 3 in remainingPlayers:
+            self.numPlayers = 3
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 2
+            storedCards = self.controller.allPlayerCards.get(4, {}).get('handCards', []) + \
+                          self.controller.allPlayerCards.get(4, {}).get('topCards', []) + \
+                          self.controller.allPlayerCards.get(4, {}).get('bottomCards', [])
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(2, {}),
+                3: self.controller.allPlayerCards.get(3, {}),
+            }
+        elif self.controller.playerIndex == 1 and 2 in remainingPlayers and 4 in remainingPlayers:
+            self.numPlayers = 3
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 2
+            storedCards = self.controller.allPlayerCards.get(3, {}).get('handCards', []) + \
+                          self.controller.allPlayerCards.get(3, {}).get('topCards', []) + \
+                          self.controller.allPlayerCards.get(3, {}).get('bottomCards', [])
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(2, {}),
+                3: self.controller.allPlayerCards.get(4, {}),
+            }
+        elif self.controller.playerIndex == 1 and 3 in remainingPlayers and 4 in remainingPlayers:
+            self.numPlayers = 3
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 3
+            storedCards = self.controller.allPlayerCards.get(2, {}).get('handCards', []) + \
+                          self.controller.allPlayerCards.get(2, {}).get('topCards', []) + \
+                          self.controller.allPlayerCards.get(2, {}).get('bottomCards', [])
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(3, {}),
+                3: self.controller.allPlayerCards.get(4, {}),
+            }
+        elif self.controller.playerIndex == 2 and 1 in remainingPlayers and 3 in remainingPlayers:
+            self.numPlayers = 3
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 2
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(2, {}),
+                3: self.controller.allPlayerCards.get(3, {}),
+            }
+        elif self.controller.playerIndex == 2 and 1 in remainingPlayers and 4 in remainingPlayers:
+            self.numPlayers = 3
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 2
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(2, {}),
+                3: self.controller.allPlayerCards.get(4, {}),
+            }
+        elif self.controller.playerIndex == 3 and 1 in remainingPlayers and 2 in remainingPlayers:
+            self.numPlayers = 3
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 3
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(2, {}),
+                3: self.controller.allPlayerCards.get(3, {}),
+            }
+        elif self.controller.playerIndex == 3 and 1 in remainingPlayers and 4 in remainingPlayers:
+            self.numPlayers = 3
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 3
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(3, {}),
+                3: self.controller.allPlayerCards.get(4, {}),
+            }
+        elif self.controller.playerIndex == 4 and 1 in remainingPlayers and 2 in remainingPlayers:
+            self.playerIndex = 3
+            self.controller.playerIndex = self.playerIndex
+            self.numPlayers = 3
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 3
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(2, {}),
+                3: self.controller.allPlayerCards.get(4, {}),
+            }
+        elif self.controller.playerIndex == 4 and 1 in remainingPlayers and 3 in remainingPlayers:
+            self.playerIndex = 3
+            self.controller.playerIndex = self.playerIndex
+            self.numPlayers = 3
+            self.controller.numPlayers = self.numPlayers
+            self.controller.currentPlayer = 3
+            self.controller.allPlayerCards = {
+                1: self.controller.allPlayerCards.get(1, {}),
+                2: self.controller.allPlayerCards.get(3, {}),
+                3: self.controller.allPlayerCards.get(4, {}),
+            }
+
+        self.controller.currentPlayerChangedSignal.emit(self.controller.currentPlayer) 
+        
+        if self.playerIndex == 1:
+            leftPlayerCards = self.controller.allPlayerCards.get(2, {})
+            topPlayerCards = self.controller.allPlayerCards.get(3, {})
+        elif self.playerIndex == 2:
+            leftPlayerCards = self.controller.allPlayerCards.get(3, {})
+            topPlayerCards = self.controller.allPlayerCards.get(1, {})
+        elif self.playerIndex == 3:
+            leftPlayerCards = self.controller.allPlayerCards.get(1, {})
+            topPlayerCards = self.controller.allPlayerCards.get(2, {})
+        
+        self.threePlayerLayoutSignal.emit()
+
+        # Update signals for the current player and other players
+        if not self.controller.topCardSelectionPhase:
+            self.controller.updateBottomCardsSignal.emit(self.controller.bottomCards)
+        self.controller.updateTopCardsSignal.emit(self.controller.topCards)
+        self.controller.updatePlayerHandSignal.emit(self.controller.handCards)
+
+        if self.playerIndex == 1:
+            if self.controller.deck and storedCards:
+                random.shuffle(storedCards)
+                self.controller.deck.extend(storedCards)
+                self.controller.updateDeckSignal.emit(self.controller.deck)
+                self.controller.broadcastUpdate('updateDeck', {'deck': self.controller.deck})
+            self.controller.updateOtherPlayerCardsSignal.emit(2, leftPlayerCards.get('handCards', []), leftPlayerCards.get('topCards', []), leftPlayerCards.get('bottomCards', []))
+            self.controller.updateOtherPlayerCardsSignal.emit(3, topPlayerCards.get('handCards', []), topPlayerCards.get('topCards', []), topPlayerCards.get('bottomCards', []))
+        elif self.playerIndex == 2:
+            self.controller.updateOtherPlayerCardsSignal.emit(3, leftPlayerCards.get('handCards', []), leftPlayerCards.get('topCards', []), leftPlayerCards.get('bottomCards', []))
+            self.controller.updateOtherPlayerCardsSignal.emit(1, topPlayerCards.get('handCards', []), topPlayerCards.get('topCards', []), topPlayerCards.get('bottomCards', []))
+        elif self.playerIndex == 3:
+            self.controller.updateOtherPlayerCardsSignal.emit(1, leftPlayerCards.get('handCards', []), leftPlayerCards.get('topCards', []), leftPlayerCards.get('bottomCards', []))
+            self.controller.updateOtherPlayerCardsSignal.emit(2, topPlayerCards.get('handCards', []), topPlayerCards.get('topCards', []), topPlayerCards.get('bottomCards', []))
+        
+        self.setWindowTitle(f'Palace Card Game - Player {self.playerIndex}')
+        
+    def clearPlayerLayout(self, handLayout, handLabel, topLayout, bottomLayout):
+            layouts = [handLayout, topLayout, bottomLayout]
+            for layout in layouts:
+                while layout.count():
+                    item = layout.takeAt(0)
+                    widget = item.widget()
+                    if widget:
+                        widget.deleteLater()
+            if handLabel:
+                handLabel.deleteLater()
     
     def updateHandCards(self, handCards):
         """
@@ -1542,7 +1802,8 @@ class GameView(QWidget):
         Update the UI for the current player.
         """
         currentPlayerNickname = self.controller.playerNicknames.get(f"{self.controller.currentPlayer}", f"Player {self.controller.currentPlayer}")
-        self.currentPlayerLabel.setText(f"Current Player: {currentPlayerNickname}'s Hand")
+        if not self.controller.topCardSelectionPhase:
+            self.currentPlayerLabel.setText(f"Current Player: {currentPlayerNickname}'s Hand")
         isCurrentPlayer = currentPlayer == self.playerIndex
         self.setPlayerHandEnabled(isCurrentPlayer)
         if not isCurrentPlayer:
@@ -1630,7 +1891,7 @@ class GameController(QObject):
         self.broadcastUpdate = broadcastUpdate
         self.topCardConfirms = 0
         self.currentPlayer = None
-        self.gameWon = True
+        self.gameWon = False
         
         self.allPlayerCards = {
             self.playerIndex: {
@@ -1708,9 +1969,14 @@ class GameController(QObject):
             elif card[3]:
                 popped = [card[0], card[1], card[2], False]
                 self.pile.append(popped)
-                if len(self.pile) >= 2 and self.pile[-1][0] not in {"2", "10"} and self.pile[-2][0] > self.pile[-1][0]:
-                    pickUpFlag = True
-                    continue
+                if not self.sevenSwitch:
+                    if len(self.pile) >= 2 and self.pile[-1][0] not in {"2", "10"} and self.pile[-2][0] >= self.pile[-1][0]:
+                        pickUpFlag = True
+                        continue
+                else:
+                    if len(self.pile) >= 2 and self.pile[-1][0] not in {"2", "10"} and self.pile[-2][0] <= self.pile[-1][0]:
+                        pickUpFlag = True
+                        continue
             else:
                 self.pile.append(popped)
             playedCards.append(popped)
