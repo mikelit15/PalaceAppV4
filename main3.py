@@ -60,6 +60,14 @@ def centerDialog(dialog, parent, name=None):
         offset = 100
     elif name == "rulesDialog":
         offset = 225
+    elif name == "gameView":
+        offset = 15
+    elif name == "onlineMenu":
+        offset = 15
+    elif name == "hostLobby":
+        offset = 20
+    elif name == "joinLobby":
+        offset = 20
 
     if isinstance(parent, QRect):
         # Parent is a QRect (geometry object)
@@ -90,8 +98,9 @@ CARD_HEIGHT = 84
 BUTTON_WIDTH = 66
 BUTTON_HEIGHT = 87
 
-RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+RANKS = {'3': 2, '4': 3, '5': 4, '6': 5, '8': 6, '9': 7, 'J': 8, 'Q': 9, '7': 10, 'K': 11, 'A': 12, '2': 13, '10': 14}
 VALUES = {'2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14}
+
 
 class GameOverDialog(QDialog):
     playAgainSignal = Signal()
@@ -219,7 +228,7 @@ class OnlineMenu(QWidget):
         super().__init__()
         self.parent = parent
         self.initUI()
-        centerDialog(self, parent, "OnlineMenu")
+        centerDialog(self, parent, "onlineMenu")
 
     def initUI(self):
         self.setWindowTitle("Online Menu")
@@ -256,7 +265,7 @@ class OnlineMenu(QWidget):
         self.parent.show()
 
 ### Host Lobby ###
-class HostLobby(QWidget):
+class HostLobby(QDialog):
     updateOtherPlayerHandSignal = Signal(int, list, list, list)
     
     def __init__(self, mainMenu, onlineMenu):
@@ -273,7 +282,7 @@ class HostLobby(QWidget):
         self.gameOverDialog = None
         self.hostController = None
         self.initUI()
-        centerDialog(self, self.parent, "HostLobby")
+        centerDialog(self, self.parent, "hostLobby")
         self.startServer()
         
     def initUI(self):
@@ -448,8 +457,10 @@ class HostLobby(QWidget):
                             if self.numPlayers == 1:
                                 QMetaObject.invokeMethod(self.gameOverDialog, "close", Qt.ConnectionType.QueuedConnection)
                                 QMetaObject.invokeMethod(self.hostGameView, "returnToMainMenu", Qt.ConnectionType.QueuedConnection)
+                                self.shutdownServer()
                             self.gameOverDialog.updateCounter(self.playAgainCount)
                             self.broadcastToClients('updateNumPlayersLobby', {}, exclude=clientSocket)
+                            self.checkAllPlayersPlayAgain()
                     except json.JSONDecodeError:
                         print(f"Received invalid data from Player {index}: {message}")
                         break
@@ -469,6 +480,14 @@ class HostLobby(QWidget):
             self.reassignIndices()
             self.updatePlayerCount()
             clientSocket.close()
+    
+    @Slot()
+    def handleHostDisconnect(self):
+        """
+        If host is the one disconnecting, then goBack(). 
+        This shuts down the server and returns to main menu.
+        """
+        self.shutdownServer()
     
     @Slot(int)
     def showGameOverDialog(self, winner):
@@ -497,7 +516,7 @@ class HostLobby(QWidget):
     def returnToMainMenu(self):
         self.broadcastToClients('gameClose', {})
         QMetaObject.invokeMethod(self.hostGameView, "returnToMainMenu", Qt.ConnectionType.QueuedConnection)
-        self.goBack()
+        self.shutdownServer()
     
     def quitGame(self):
         self.broadcastToClients('gameClose', {})
@@ -550,20 +569,22 @@ class HostLobby(QWidget):
     
     def broadcastToClients(self, action, data, exclude=None):
         message = json.dumps({"action": action, **data}) + "\n"
-        for clientSocket in self.clients.keys():
-            if clientSocket != exclude:  # Exclude the specified client
+        current_clients = list(self.clients.keys())
+        for clientSocket in current_clients:
+            if clientSocket != exclude:
                 try:
                     clientSocket.send(message.encode())
                 except Exception as e:
                     QMetaObject.invokeMethod(self.logText, "append", Qt.ConnectionType.QueuedConnection,
                         Q_ARG(str, f"Error broadcasting to client: {e}"))
     
+    @Slot()
     def startGame(self):
         self.playAgainCount = 0
         if self.nicknameInput.text() != "":
             self.playerNicknames[1] = self.nicknameInput.text()
         suits = ['hearts', 'diamonds', 'clubs', 'spades']
-        self.deck = [(rank, suit, False, False) for rank in RANKS for suit in suits]
+        self.deck = [(value, suit, False, False) for value in VALUES.keys() for suit in suits]
         random.shuffle(self.deck)
 
         self.players = []
@@ -621,6 +642,7 @@ class HostLobby(QWidget):
             self.playerNicknames
         )
         self.hostController.gameOverSignal.connect(self.showGameOverDialog)
+        self.hostController.hostDisconnectedSignal.connect(self.handleHostDisconnect)
         self.hostGameView = GameView(self.hostController, self.geometry(), self.numPlayers, self.mainMenu)
         self.hostGameView.show()
         self.hostController.startGame()
@@ -644,13 +666,26 @@ class HostLobby(QWidget):
         self.parent.show()
 
     def closeEvent(self, event):
-        self.shutdownServer()
-        super().closeEvent(event)
+        """
+        Override the closeEvent to confirm shutdown.
+        """
+        reply = QMessageBox.question(
+            self,
+            'Quit Confirmation',
+            'Are you sure you want to quit hosting?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.shutdownServer()
+            event.accept()
+        else:
+            event.ignore()
 
 ### Join Lobby ###
-class JoinLobby(QWidget):
+class JoinLobby(QDialog):
     startGameSignal = Signal(int)
-    
     def __init__(self, mainMenu, onlineMenu):
         super().__init__()
         self.parent = onlineMenu
@@ -664,7 +699,7 @@ class JoinLobby(QWidget):
         self.gameView = None
         self.playerNicknames = {}
         self.initUI()
-        centerDialog(self, self.parent, "JoinLobby")
+        centerDialog(self, self.parent, "joinLobby")
 
         # Connect the startGameSignal to the startGame slot
         self.startGameSignal.connect(self.startGame)
@@ -855,7 +890,9 @@ class JoinLobby(QWidget):
     def returnToMainMenu(self):
         self.broadcastUpdate('leaveLobby', {})
         QMetaObject.invokeMethod(self.gameView, "close", Qt.ConnectionType.QueuedConnection)
-        self.goBack()
+        QMetaObject.invokeMethod(self.gameView, "returnToMainMenu", Qt.ConnectionType.QueuedConnection)
+        if self.connected:
+            self.leaveServer()
         
     def quitGame(self):
         self.broadcastUpdate('leaveLobby', {})
@@ -952,7 +989,7 @@ class GameView(QWidget):
         self.selectedCards = []
         self.playAgainCount = 0
         self.initUI()
-        centerDialog(self, parentCoords, "GameView")
+        centerDialog(self, parentCoords, "gameView")
                 
         self.controller.updatePlayerHandSignal.connect(self.updateHandCards)
         self.controller.updateTopCardsSignal.connect(self.updateTopCards)
@@ -981,11 +1018,17 @@ class GameView(QWidget):
         # Disconnect Button
         self.disconnectButton = QPushButton("Disconnect")
         self.disconnectButton.setFixedWidth(125)
-        self.disconnectButton.clicked.connect(self.controller.disconnect)
+        self.disconnectButton.clicked.connect(self.closeEvent)
         if self.numPlayers == 2:
-            self.layout.addWidget(self.disconnectButton, 0, 1)
+            self.layout.addWidget(self.disconnectButton, 1, 1, alignment=Qt.AlignmentFlag.AlignTop)
+            self.layout.addWidget(self.disconnectButton, 0, 2)
+            self.layout.addWidget(self.disconnectButton, 0, 14)
+            self.layout.addWidget(self.disconnectButton, 0, 15)
+        elif self.numPlayers == 3:
+            self.layout.addWidget(self.disconnectButton, 1, 1, alignment=Qt.AlignmentFlag.AlignTop)
+            self.layout.addWidget(self.disconnectButton, 0, 14)
         else:
-            self.layout.addWidget(self.disconnectButton, 1, 1)
+            self.layout.addWidget(self.disconnectButton, 1, 1, alignment=Qt.AlignmentFlag.AlignTop)
         
         self.spacerButtonTopBottom = QLabel()
         self.spacerButtonTopBottom.setFixedWidth(125)
@@ -1036,14 +1079,14 @@ class GameView(QWidget):
         Initializes the center console with the deck, pile, and current player information.
         """
         self.deckLabel = QLabel()
-        self.deckLabel.setFixedWidth(190)
+        self.deckLabel.setFixedWidth(192)
         self.deckLabel.hide()
         
         self.pileLabel = QLabel("\t     Select your 3 Top cards...")
         self.pileLabel.setFixedHeight(BUTTON_HEIGHT + 10)
 
         self.pickUpPileButton = QPushButton("Pick Up Pile")
-        self.pickUpPileButton.setFixedWidth(125)
+        self.pickUpPileButton.setFixedWidth(123)
         self.pickUpPileButton.clicked.connect(self.controller.pickUpPile)
         self.pickUpPileButton.hide()
         
@@ -1058,7 +1101,7 @@ class GameView(QWidget):
 
         self.centerContainer = QWidget()
         self.centerContainer.setLayout(self.consoleLayout)
-        self.centerContainer.setFixedWidth(500)
+        self.centerContainer.setFixedWidth(460)
         
         self.centerLayout = QVBoxLayout()
         self.centerLayout.addWidget(QLabel(""))
@@ -1076,7 +1119,7 @@ class GameView(QWidget):
         layout = QVBoxLayout()
         
         playerHandContainer = QWidget()
-        playerHandContainer.setMaximumWidth(500)
+        playerHandContainer.setMaximumWidth(400)
         handLayout = QHBoxLayout(playerHandContainer)
         playerHandContainerLayout = QHBoxLayout()
         playerHandContainerLayout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
@@ -1128,7 +1171,7 @@ class GameView(QWidget):
         layout.addWidget(handLabelLayout, alignment=Qt.AlignmentFlag.AlignCenter)
         
         playerHandContainer = QWidget()
-        playerHandContainer.setMaximumWidth(500)
+        playerHandContainer.setMaximumWidth(400)
         handLayout = QHBoxLayout(playerHandContainer)
         playerHandContainerLayout = QHBoxLayout()
         playerHandContainerLayout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
@@ -1311,7 +1354,7 @@ class GameView(QWidget):
         elif self.playerIndex == 2:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
             self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('3', 'Player 3')}'s Hand", (6, 1))
-            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaBot(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (1, 6))
+            self.topHand, self.topHandLabel, self.topTop, self.topBottom = self.initPlayerAreaTop(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (1, 6))
         elif self.playerIndex == 3:
             self.playerHand, self.playerHandLabel, self.playerTop, self.playerBottom = self.initPlayerAreaBot("Your Hand", (11, 6))
             self.leftHand, self.leftHandLabel, self.leftTop, self.leftBottom = self.initPlayerAreaLeft(f"{self.controller.playerNicknames.get('1', 'Player 1')}'s Hand", (6, 1))
@@ -1758,9 +1801,17 @@ class GameView(QWidget):
                     button.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     layout.addWidget(button)
             else:
+                rotatedDimensions = (BUTTON_HEIGHT, BUTTON_WIDTH)
+                standardDimensions = (BUTTON_WIDTH, BUTTON_HEIGHT)
                 for _ in range(3):  # Assume a maximum of 3 placeholders
                     placeholder = QLabel()
-                    placeholder.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
+                    if layout in [getattr(self, 'leftHand', None), getattr(self, 'rightHand', None),
+                                getattr(self, 'leftTop', None), getattr(self, 'rightTop', None),
+                                getattr(self, 'leftBottom', None), getattr(self, 'rightBottom', None)]:
+                        placeholder.setFixedSize(*rotatedDimensions)
+                        rotate = True
+                    else:
+                        placeholder.setFixedSize(*standardDimensions)
                     placeholder.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
                     layout.addWidget(placeholder)
     
@@ -1769,7 +1820,15 @@ class GameView(QWidget):
         Enable the confirm button only when exactly 3 cards are selected.
         """
         self.confirmButton.setEnabled(selectedCount == 3)
-    
+        if selectedCount == 3:
+            selectedCardObjs = [tup[1] for tup in self.controller.selectedCards]
+            for i, handCard in enumerate(self.controller.handCards):
+                isEnabled = (handCard in selectedCardObjs)
+                self.updateCardState(i, isEnabled)
+                
+        else:
+            self.setPlayerHandEnabled(True)
+                
     def updatePlaceButton(self, isEnabled, text):
         if text == "Waiting for other players...":
             self.confirmButton.setEnabled(isEnabled)
@@ -1792,7 +1851,7 @@ class GameView(QWidget):
             )
             self.pileLabel.setPixmap(pixmap)
         else:
-            self.pileLabel.setText("Pile: Empty")
+            self.pileLabel.setText("Pile:\nEmpty")
     
     def updatePileLabel(self, text):
         self.pileLabel.setText(text)
@@ -1803,7 +1862,7 @@ class GameView(QWidget):
         """
         currentPlayerNickname = self.controller.playerNicknames.get(f"{self.controller.currentPlayer}", f"Player {self.controller.currentPlayer}")
         if not self.controller.topCardSelectionPhase:
-            self.currentPlayerLabel.setText(f"Current Player: {currentPlayerNickname}'s Hand")
+            self.currentPlayerLabel.setText(f"Current Player: {currentPlayerNickname}")
         isCurrentPlayer = currentPlayer == self.playerIndex
         self.setPlayerHandEnabled(isCurrentPlayer)
         if not isCurrentPlayer:
@@ -1840,8 +1899,9 @@ class GameView(QWidget):
         self.deckLabel.show()
         self.deckLabel.setText(f"Draw Deck:\n\n{len(self.controller.deck)} cards remaining")
         self.pickUpPileButton.show()
-        self.pileLabel.setText("Pile: Empty")
-        self.pileLabel.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
+        self.pileLabel.setText("Pile:\nEmpty")
+        self.pileLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pileLabel.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT + 4)
         self.pileLabel.setStyleSheet("border: 2px dashed gray; background-color: transparent;")
         self.currentPlayerLabel.setText(f"Current Player: {self.controller.currentPlayer}")
         self.updateCurrentPlayer(self.controller.currentPlayer)
@@ -1851,10 +1911,38 @@ class GameView(QWidget):
         self.pickUpPileButton.setDisabled(True)
         self.currentPlayerLabel.setText(f"Player {winner} is Winner!!!")
     
+    @Slot()
     def returnToMainMenu(self):
         # Close the current game view and return to the main menu
         self.hide()
         self.mainMenu.show()
+    
+    def closeEvent(self, event):
+        """
+        Override the closeEvent to ensure proper disconnection behavior.
+        """
+        if self.controller.playerIndex == 1 or self.controller.numPlayers == 2:
+            reply = QMessageBox.question(
+                self,
+                'Quit Confirmation',
+                'Are you sure you want to quit the game?\nAll players will be disconnected.',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+        else:
+            reply = QMessageBox.question(
+                self,
+                'Quit Confirmation',
+                'Are you sure you want to quit the game?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.controller.disconnect()
+            event.accept()
+        else:
+            event.ignore()
     
 class GameController(QObject):
     selectedCardsChanged = Signal(int)
@@ -1871,6 +1959,7 @@ class GameController(QObject):
     updateDeckSignal = Signal(list)
     gameWonSignal = Signal(int)
     gameOverSignal = Signal(int)
+    hostDisconnectedSignal = Signal()
     playerDisconnectedSignal = Signal()
     
     topCardSelectionPhase = True
@@ -1942,8 +2031,7 @@ class GameController(QObject):
             selectedCardRank = card[0]
             for i, handCard in enumerate(self.handCards):
                 isEnabled = (
-                    not self.selectedCards or 
-                    (handCard[0] == selectedCardRank and self.isCardPlayable(handCard))
+                    not self.selectedCards or (handCard[0] == selectedCardRank and (not handCard[3] or handCard == card))
                 )
                 self.updateCardStateSignal.emit(i, isEnabled)
             if self.selectedCards:
@@ -2006,8 +2094,8 @@ class GameController(QObject):
             self.pile.clear()
             self.updatePileSignal.emit(self.pile)
             self.broadcastUpdate('updatePile', {'pile': self.pile})
-            self.updatePileLabelSignal.emit("Bombed!!!")
-            self.broadcastUpdate('updatePileLabel', {'pileLabel': "Bombed!!!"})
+            self.updatePileLabelSignal.emit("Pile:\nBombed!!!")
+            self.broadcastUpdate('updatePileLabel', {'pileLabel': "Pile:\nBombed!!!"})
             self.sevenSwitch = False
             self.broadcastUpdate('sevenSwitch', {'sevenSwitch': False})
             self.checkGameState()
@@ -2018,6 +2106,7 @@ class GameController(QObject):
         
         if '2' in [card[0] for card in playedCards]:
             self.sevenSwitch = False
+            self.placeButtonStateChanged.emit(False, 'Select a Card')
             self.broadcastUpdate('sevenSwitch', {'sevenSwitch': False})
             self.checkGameState()
             self.broadcastCards()
@@ -2028,9 +2117,10 @@ class GameController(QObject):
             self.pile.clear()
             self.updatePileSignal.emit(self.pile)
             self.broadcastUpdate('updatePile', {'pile': self.pile})
-            self.updatePileLabelSignal.emit("Bombed!!!")
-            self.broadcastUpdate('updatePileLabel', {'pileLabel': "Bombed!!!"})
+            self.updatePileLabelSignal.emit("Pile:\nBombed!!!")
+            self.broadcastUpdate('updatePileLabel', {'pileLabel': "Pile:\nBombed!!!"})
             self.sevenSwitch = False
+            self.placeButtonStateChanged.emit(False, 'Select a Card')
             self.broadcastUpdate('sevenSwitch', {'sevenSwitch': False})
             self.checkGameState()
             self.broadcastCards()
@@ -2112,6 +2202,8 @@ class GameController(QObject):
         self.broadcastCards()
         self.broadcastUpdate('confirmedTopCards', {})
         self.placeButtonStateChanged.emit(False, "Waiting for other players...")
+        if self.playerIndex == 1:
+            self.checkAllPlayersConfirmed()
     
     def checkAllPlayersConfirmed(self):        
         if self.topCardConfirms == self.numPlayers:
@@ -2121,10 +2213,8 @@ class GameController(QObject):
             print(f"Player {secondLowestPlayer} has the second lowest rank total.")
             
             if secondLowestPlayer:
-                if secondLowestPlayer > lowestPlayer:
-                    self.clockwise = True
-                else:
-                    self.clockwise = False
+                next_player = lowestPlayer % self.numPlayers + 1
+                self.clockwise = (secondLowestPlayer == next_player)
             else:
                 self.clockwise = True
             if self.playerIndex == 1:
@@ -2156,6 +2246,11 @@ class GameController(QObject):
             self.broadcastUpdate('gameOver', {'winner': currentPlayerNickname})
     
     def disconnect(self):
+        if self.playerIndex == 1:
+            self.broadcastUpdate('gameClose', {})
+            self.hostDisconnectedSignal.emit()
+            self.playerDisconnectedSignal.emit()
+            return
         self.broadcastUpdate('playerDisconnected', {'playerIndex': self.playerIndex})
         self.playerDisconnectedSignal.emit()
         
@@ -2192,7 +2287,7 @@ class GameController(QObject):
         rankTotals = {}
         for playerIndex, cards in self.allPlayerCards.items():
             topCards = cards.get('topCards', [])
-            total = sum(VALUES[card[0]] for card in topCards)  
+            total = sum(RANKS[card[0]] for card in topCards)
             rankTotals[playerIndex] = total
         
         lowestPlayer = min(rankTotals, key=rankTotals.get)
