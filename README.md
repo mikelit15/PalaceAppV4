@@ -8,12 +8,10 @@ A cross-platform desktop application built with PySide6 and qdarktheme that lets
 
 1. [Features](#features)
 2. [Prerequisites](#prerequisites)
-3. [Installation](#installation)
-4. [Usage](#usage)
-5. [Code Overview](#code-overview)
-6. [Directory Structure](#directory-structure)
-7. [Configuration & Assets](#configuration--assets)
-8. [Troubleshooting](#troubleshooting)
+3. [Usage](#usage)
+4. [Code Overview](#code-overview)
+5. [Directory Structure](#directory-structure)
+6. [Configuration & Assets](#configuration--assets)
 
 ---
 
@@ -40,28 +38,6 @@ Install dependencies via pip:
 ```bash
 pip install PySide6 qdarktheme
 ```
-
----
-
-## Installation
-
-1. **Clone the repository**
-
-   ```bash
-   git clone https://github.com/yourusername/palace-card-game.git
-   cd palace-card-game
-   ```
-
-2. **Install dependencies**
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-   *(Alternatively: `pip install PySide6 qdarktheme`)*
-
-3. **Ensure asset folder**
-   Confirm that the `palaceData/` directory (containing `palaceIcon.ico`, card images, etc.) sits alongside `main.py`.
 
 ---
 
@@ -149,12 +125,3 @@ palace-card-game/
 * **`palaceData/palaceIcon.ico`**: Window and dialog icon.
 * **Card Images**: Place 56×84 PNGs in `palaceData/cards/`, named `A_hearts.png`, etc.
 * **Optional Rules File**: `palaceData/rules.txt` (displayed via the Rules button).
-
----
-
-## Troubleshooting
-
-* **Missing Qt Plugins**: Ensure PySide6’s `plugins` folder is discoverable, or set `QT_PLUGIN_PATH`.
-* **Port Conflicts**: If port 12345 is in use when hosting, modify `HostLobby.startServer()` to a free port.
-* **High CPU Usage**: AI threads poll in a loop; adjust sleep intervals in `run_ai()`.
-* **UI Flicker**: For smoother rendering, consider using `QGraphicsView` instead of raw widgets.
